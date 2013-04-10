@@ -17,14 +17,15 @@ import unittest
 from datetime import datetime
 import cgi
 import hashlib
+import base64
 import urllib
 
 import xml.dom.minidom
 import simplejson
 
 from swift.common.swob import Request, Response, HTTPUnauthorized, \
-    HTTPCreated,HTTPNoContent, HTTPAccepted, HTTPBadRequest, HTTPNotFound, \
-    HTTPConflict
+    HTTPCreated, HTTPNoContent, HTTPAccepted, HTTPBadRequest, HTTPNotFound, \
+    HTTPConflict, HTTPForbidden, HTTPRequestEntityTooLarge
 
 from swift3 import middleware as swift3
 
@@ -664,6 +665,17 @@ class TestSwift3(unittest.TestCase):
         resp = local_app(req.environ, lambda *args: None)
         self.assertEquals(app.req.headers['Authorization'], 'AWS Z:X')
         self.assertEquals(app.req.headers['Date'], dt_formatted)
+
+    def test_token_generation(self):
+        req = Request.blank('/bucket/object?uploadId=123456789abcdef'
+                            '&partNumber=1',
+                            environ={'REQUEST_METHOD': 'PUT'})
+        req.headers['Authorization'] = 'AWS X:Y'
+        resp = self.app(req.environ, start_response)
+        self.assertEquals(base64.urlsafe_b64decode(
+                              req.headers['X-Auth-Token']),
+                              'PUT\n\n\n/bucket/object?partNumber=1'
+                              '&uploadId=123456789abcdef')
 
 if __name__ == '__main__':
     unittest.main()
