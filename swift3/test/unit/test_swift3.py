@@ -18,13 +18,14 @@ from datetime import datetime
 import cgi
 import hashlib
 import urllib
+import base64
 
 import xml.dom.minidom
 import simplejson
 
 from swift.common.swob import Request, Response, HTTPUnauthorized, \
-    HTTPCreated,HTTPNoContent, HTTPAccepted, HTTPBadRequest, HTTPNotFound, \
-    HTTPConflict
+    HTTPCreated, HTTPNoContent, HTTPAccepted, HTTPBadRequest, HTTPNotFound, \
+    HTTPConflict, HTTPForbidden, HTTPRequestEntityTooLarge
 
 from swift3 import middleware as swift3
 
@@ -61,6 +62,8 @@ class FakeAppService(FakeApp):
             return account_list
         elif self.status == 401:
             start_response(HTTPUnauthorized().status, [])
+        elif self.status == 403:
+            start_response(HTTPForbidden().status, [])
         else:
             start_response(HTTPBadRequest().status, [])
         return []
@@ -92,6 +95,8 @@ class FakeAppBucket(FakeApp):
                 return account_list
             elif self.status == 401:
                 start_response(HTTPUnauthorized().status, [])
+            elif self.status == 403:
+                start_response(HTTPForbidden().status, [])
             elif self.status == 404:
                 start_response(HTTPNotFound().status, [])
             else:
@@ -101,6 +106,8 @@ class FakeAppBucket(FakeApp):
                 start_response(HTTPCreated().status, [])
             elif self.status == 401:
                 start_response(HTTPUnauthorized().status, [])
+            elif self.status == 403:
+                start_response(HTTPForbidden().status, [])
             elif self.status == 202:
                 start_response(HTTPAccepted().status, [])
             else:
@@ -110,6 +117,8 @@ class FakeAppBucket(FakeApp):
                 start_response(HTTPNoContent().status, [])
             elif self.status == 401:
                 start_response(HTTPUnauthorized().status, [])
+            elif self.status == 403:
+                start_response(HTTPForbidden().status, [])
             elif self.status == 404:
                 start_response(HTTPNotFound().status, [])
             elif self.status == 409:
@@ -144,6 +153,8 @@ class FakeAppObject(FakeApp):
                     return self.object_body
             elif self.status == 401:
                 start_response(HTTPUnauthorized(request=req).status, [])
+            elif self.status == 403:
+                start_response(HTTPForbidden(request=req).status, [])
             elif self.status == 404:
                 start_response(HTTPNotFound(request=req).status, [])
             else:
@@ -154,8 +165,13 @@ class FakeAppObject(FakeApp):
                                [('etag', self.response_headers['etag'])])
             elif self.status == 401:
                 start_response(HTTPUnauthorized(request=req).status, [])
+            elif self.status == 403:
+                start_response(HTTPForbidden(request=req).status, [])
             elif self.status == 404:
                 start_response(HTTPNotFound(request=req).status, [])
+            elif self.status == 413:
+                start_response(HTTPRequestEntityTooLarge(request=req).status,
+                               [])
             else:
                 start_response(HTTPBadRequest(request=req).status, [])
         elif env['REQUEST_METHOD'] == 'DELETE':
@@ -163,6 +179,8 @@ class FakeAppObject(FakeApp):
                 start_response(HTTPNoContent(request=req).status, [])
             elif self.status == 401:
                 start_response(HTTPUnauthorized(request=req).status, [])
+            elif self.status == 403:
+                start_response(HTTPForbidden(request=req).status, [])
             elif self.status == 404:
                 start_response(HTTPNotFound(request=req).status, [])
             else:
@@ -224,6 +242,8 @@ class TestSwift3(unittest.TestCase):
     def test_service_GET_error(self):
         code = self._test_method_error(FakeAppService, 'GET', '/', 401)
         self.assertEquals(code, 'AccessDenied')
+        code = self._test_method_error(FakeAppService, 'GET', '/', 403)
+        self.assertEquals(code, 'AccessDenied')
         code = self._test_method_error(FakeAppService, 'GET', '/', 0)
         self.assertEquals(code, 'InvalidURI')
 
@@ -253,6 +273,8 @@ class TestSwift3(unittest.TestCase):
 
     def test_bucket_GET_error(self):
         code = self._test_method_error(FakeAppBucket, 'GET', '/bucket', 401)
+        self.assertEquals(code, 'AccessDenied')
+        code = self._test_method_error(FakeAppBucket, 'GET', '/bucket', 403)
         self.assertEquals(code, 'AccessDenied')
         code = self._test_method_error(FakeAppBucket, 'GET', '/bucket', 404)
         self.assertEquals(code, 'NoSuchBucket')
@@ -376,6 +398,8 @@ class TestSwift3(unittest.TestCase):
         self.assertEqual(code, 'InvalidArgument')
         code = self._test_method_error(FakeAppBucket, 'PUT', '/bucket', 401)
         self.assertEquals(code, 'AccessDenied')
+        code = self._test_method_error(FakeAppBucket, 'PUT', '/bucket', 403)
+        self.assertEquals(code, 'AccessDenied')
         code = self._test_method_error(FakeAppBucket, 'PUT', '/bucket', 202)
         self.assertEquals(code, 'BucketAlreadyExists')
         code = self._test_method_error(FakeAppBucket, 'PUT', '/bucket', 0)
@@ -391,6 +415,8 @@ class TestSwift3(unittest.TestCase):
 
     def test_bucket_DELETE_error(self):
         code = self._test_method_error(FakeAppBucket, 'DELETE', '/bucket', 401)
+        self.assertEquals(code, 'AccessDenied')
+        code = self._test_method_error(FakeAppBucket, 'DELETE', '/bucket', 403)
         self.assertEquals(code, 'AccessDenied')
         code = self._test_method_error(FakeAppBucket, 'DELETE', '/bucket', 404)
         self.assertEquals(code, 'NoSuchBucket')
@@ -469,6 +495,9 @@ class TestSwift3(unittest.TestCase):
                                        '/bucket/object', 401)
         self.assertEquals(code, 'AccessDenied')
         code = self._test_method_error(FakeAppObject, 'GET',
+                                       '/bucket/object', 403)
+        self.assertEquals(code, 'AccessDenied')
+        code = self._test_method_error(FakeAppObject, 'GET',
                                        '/bucket/object', 404)
         self.assertEquals(code, 'NoSuchKey')
         code = self._test_method_error(FakeAppObject, 'GET',
@@ -497,8 +526,14 @@ class TestSwift3(unittest.TestCase):
                                        '/bucket/object', 401)
         self.assertEquals(code, 'AccessDenied')
         code = self._test_method_error(FakeAppObject, 'PUT',
+                                       '/bucket/object', 403)
+        self.assertEquals(code, 'AccessDenied')
+        code = self._test_method_error(FakeAppObject, 'PUT',
                                        '/bucket/object', 404)
         self.assertEquals(code, 'NoSuchBucket')
+        code = self._test_method_error(FakeAppObject, 'PUT',
+                                       '/bucket/object', 413)
+        self.assertEquals(code, 'EntityTooLarge')
         code = self._test_method_error(FakeAppObject, 'PUT',
                                        '/bucket/object', 0)
         self.assertEquals(code, 'InvalidURI')
@@ -546,6 +581,9 @@ class TestSwift3(unittest.TestCase):
     def test_object_DELETE_error(self):
         code = self._test_method_error(FakeAppObject, 'DELETE',
                                        '/bucket/object', 401)
+        self.assertEquals(code, 'AccessDenied')
+        code = self._test_method_error(FakeAppObject, 'DELETE',
+                                       '/bucket/object', 403)
         self.assertEquals(code, 'AccessDenied')
         code = self._test_method_error(FakeAppObject, 'DELETE',
                                        '/bucket/object', 404)
@@ -664,6 +702,17 @@ class TestSwift3(unittest.TestCase):
         resp = local_app(req.environ, lambda *args: None)
         self.assertEquals(app.req.headers['Authorization'], 'AWS Z:X')
         self.assertEquals(app.req.headers['Date'], dt_formatted)
+
+    def test_token_generation(self):
+        req = Request.blank('/bucket/object?uploadId=123456789abcdef'
+                            '&partNumber=1',
+                            environ={'REQUEST_METHOD': 'PUT'})
+        req.headers['Authorization'] = 'AWS X:Y'
+        resp = self.app(req.environ, start_response)
+        self.assertEquals(base64.urlsafe_b64decode(
+                              req.headers['X-Auth-Token']),
+                              'PUT\n\n\n/bucket/object?partNumber=1'
+                              '&uploadId=123456789abcdef')
 
 if __name__ == '__main__':
     unittest.main()
