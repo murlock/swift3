@@ -13,12 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+
 import unittest
 from datetime import datetime
 import cgi
 import hashlib
 import urllib
 import base64
+import urllib
 
 import xml.dom.minidom
 import simplejson
@@ -110,6 +113,11 @@ class FakeAppBucket(FakeApp):
                 start_response(HTTPForbidden().status, [])
             elif self.status == 202:
                 start_response(HTTPAccepted().status, [])
+            else:
+                start_response(HTTPBadRequest().status, [])
+        elif env['REQUEST_METHOD'] == 'POST':
+            if self.status == 204:
+                start_response(HTTPNoContent().status, [])
             else:
                 start_response(HTTPBadRequest().status, [])
         elif env['REQUEST_METHOD'] == 'DELETE':
@@ -400,7 +408,14 @@ class TestSwift3(unittest.TestCase):
         self.assertEquals(code, 'AccessDenied')
         code = self._test_method_error(FakeAppBucket, 'PUT', '/bucket', 403)
         self.assertEquals(code, 'AccessDenied')
+        # S3 doesn't allow a PUT to an already-existing bucket with no ACL
+        # header and no "acl" query param
         code = self._test_method_error(FakeAppBucket, 'PUT', '/bucket', 202)
+        self.assertEquals(code, 'BucketAlreadyExists')
+        # S3 doesn't allow a PUT to an already-existing bucket with ONLY the
+        # canned-acl header (and no "acl" query param)
+        code = self._test_method_error(FakeAppBucket, 'PUT', '/bucket', 202,
+                                       {'X-Amz-Acl': 'public-read'})
         self.assertEquals(code, 'BucketAlreadyExists')
         code = self._test_method_error(FakeAppBucket, 'PUT', '/bucket', 0)
         self.assertEquals(code, 'InvalidURI')
@@ -410,6 +425,16 @@ class TestSwift3(unittest.TestCase):
         req = Request.blank('/bucket',
                             environ={'REQUEST_METHOD': 'PUT'},
                             headers={'Authorization': 'AWS test:tester:hmac'})
+        resp = local_app(req.environ, local_app.app.do_start_response)
+        self.assertEquals(local_app.app.response_args[0].split()[0], '200')
+
+    def test_bucket_PUT_acl_to_existing_container(self):
+        local_app = swift3.filter_factory({})(FakeAppBucket(204))
+        req = Request.blank('/bucket?acl',
+                            environ={'REQUEST_METHOD': 'PUT'},
+                            headers={
+                                'Authorization': 'AWS test:tester:hmac',
+                                'X-Amz-Acl': 'public-read'})
         resp = local_app(req.environ, local_app.app.do_start_response)
         self.assertEquals(local_app.app.response_args[0].split()[0], '200')
 
@@ -434,9 +459,7 @@ class TestSwift3(unittest.TestCase):
         self.assertEquals(local_app.app.response_args[0].split()[0], '204')
 
     def _check_acl(self, owner, resp):
-        xml_string = ''.join(resp)
-        import sys; print >>sys.stderr, 'xml_string: %s' % xml_string
-        dom = xml.dom.minidom.parseString(xml_string)
+        dom = xml.dom.minidom.parseString(''.join(resp))
         self.assertEquals(dom.firstChild.nodeName, 'AccessControlPolicy')
         name = dom.getElementsByTagName('Permission')[0].childNodes[0].nodeValue
         self.assertEquals(name, 'FULL_CONTROL')
