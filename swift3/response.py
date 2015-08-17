@@ -95,11 +95,16 @@ class Response(ResponseBase, swob.Response):
         for key, val in sw_headers.iteritems():
             _key = key.lower()
 
+            header_map = {}
+            if 'User-Agent' in sw_headers and \
+                    'NetBackup/7.' in sw_headers['User-Agent']:
+                header_map['sts-image-version'] = 'sts_image_version'
             if _key.startswith('x-object-meta-'):
                 # Note that AWS ignores user-defined headers with '=' in the
                 # header name. We translated underscores to '=5F' on the way
                 # in, though.
-                headers['x-amz-meta-' + _key[14:].replace('=5f', '_')] = val
+                _key = header_map.get(_key[14:], _key[14:]).replace('=5f', '_')
+                headers['x-amz-meta-' + _key] = val
             elif _key in ('content-length', 'content-type',
                           'content-range', 'content-encoding',
                           'content-disposition', 'content-language',
