@@ -98,8 +98,12 @@ class Response(ResponseBase, swob.Response):
         for key, val in sw_headers.iteritems():
             _key = key.lower()
 
+            header_map = {
+                'sts-image-version': 'sts_image_version',
+            }
             if _key.startswith('x-object-meta-'):
-                headers['x-amz-meta-' + _key[14:]] = val
+                _key = header_map.get(_key[14:], _key[14:])
+                headers['x-amz-meta-' + _key] = val
             elif _key in ('content-length', 'content-type',
                           'content-range', 'content-encoding',
                           'content-disposition', 'content-language',
