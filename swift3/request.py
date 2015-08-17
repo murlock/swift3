@@ -347,9 +347,13 @@ class Request(swob.Request):
                                 self.headers.get('Content-MD5', ''),
                                 self.headers.get('Content-Type') or '')
 
+        header_map = {
+            'x-amz-meta-sts-image-version': 'x-amz-meta-sts_image_version',
+        }
         for amz_header in sorted((key.lower() for key in self.headers
                                   if key.lower().startswith('x-amz-'))):
-            amz_headers[amz_header] = self.headers[amz_header]
+            amz_headers[header_map.get(amz_header, amz_header)] = \
+                self.headers[amz_header]
 
         if 'x-amz-date' in amz_headers:
             buf += "\n"
