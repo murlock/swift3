@@ -30,8 +30,8 @@ from swift3.request import MAX_32BIT_INT
 class TestSwift3Bucket(Swift3TestCase):
     def setup_objects(self):
         self.objects = (('rose', '2011-01-05T02:19:14.275290', 0, 303),
-                        ('viola', '2011-01-05T02:19:14.275290', 0, 3909),
-                        ('lily', '2011-01-05T02:19:14.275290', 0, 3909),
+                        ('viola', '2011-01-05T02:19:14.275290', '0', 3909),
+                        ('lily', '2011-01-05T02:19:14.275290', '"0"', 3909),
                         ('with space', '2011-01-05T02:19:14.275290', 0, 390),
                         ('with%20space', '2011-01-05T02:19:14.275290', 0, 390))
 
@@ -119,6 +119,7 @@ class TestSwift3Bucket(Swift3TestCase):
             names.append(o.find('./Key').text)
             self.assertEqual('2011-01-05T02:19:14.275Z',
                              o.find('./LastModified').text)
+            self.assertEqual('"0"', o.find('./ETag').text)
 
         self.assertEquals(len(names), len(self.objects))
         for i in self.objects:
@@ -313,6 +314,16 @@ class TestSwift3Bucket(Swift3TestCase):
         req = Request.blank('/bucket',
                             environ={'REQUEST_METHOD': 'PUT'},
                             headers={'Authorization': 'AWS test:tester:hmac'})
+        status, headers, body = self.call_swift3(req)
+        self.assertEquals(status.split()[0], '200')
+        self.assertEquals(headers['Location'], '/bucket')
+
+        # Apparently some clients will include a chunked transfer-encoding
+        # even with no body
+        req = Request.blank('/bucket',
+                            environ={'REQUEST_METHOD': 'PUT'},
+                            headers={'Authorization': 'AWS test:tester:hmac',
+                                     'Transfer-Encoding': 'chunked'})
         status, headers, body = self.call_swift3(req)
         self.assertEquals(status.split()[0], '200')
         self.assertEquals(headers['Location'], '/bucket')
