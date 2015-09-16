@@ -96,7 +96,7 @@ class ObjectController(Controller):
         """
         Handle PUT Object and PUT Object (Copy) request
         """
-        last_modified = req.check_copy_source(self.app)
+        req.check_copy_source(self.app)
 
         if 'X-Amz-Copy-Source' in req.headers:
             object_path = req.container_name + '/' + req.object_name
@@ -114,8 +114,10 @@ class ObjectController(Controller):
         resp = req.get_response(self.app)
 
         if 'X-Amz-Copy-Source' in req.headers:
+            # resp.last_modified is a datetime.datetime object
             resp.append_copy_resp_body(req.controller_name,
-                                       last_modified)
+                                       resp.last_modified.isoformat()[:-6] +
+                                       '.000Z')
 
         resp.status = HTTP_OK
         return resp
