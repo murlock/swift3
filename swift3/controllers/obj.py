@@ -15,11 +15,12 @@
 
 import sys
 
-from swift.common.http import HTTP_OK, HTTP_PARTIAL_CONTENT
+from swift.common.http import HTTP_OK, HTTP_PARTIAL_CONTENT, HTTP_NO_CONTENT
 from swift.common.swob import Range, content_range_header_value
 
 from swift3.controllers.base import Controller
-from swift3.response import S3NotImplemented, InvalidRange, NoSuchKey
+from swift3.response import (S3NotImplemented, InvalidRange, NoSuchKey,
+                             InvalidRequest)
 
 
 class ObjectController(Controller):
@@ -95,12 +96,28 @@ class ObjectController(Controller):
         """
         Handle PUT Object and PUT Object (Copy) request
         """
-        last_modified = req.check_copy_source(self.app)
+        req.check_copy_source(self.app)
+
+        if 'X-Amz-Copy-Source' in req.headers:
+            object_path = req.container_name + '/' + req.object_name
+
+            if req.headers['X-Amz-Copy-Source'].lstrip('/') == object_path:
+                if req.headers.get('x-amz-metadata-directive',
+                                   'COPY') == 'COPY':
+                    raise InvalidRequest("This copy request is illegal "
+                                         "because it is trying to copy an "
+                                         "object to itself without changing "
+                                         "the object's metadata, storage "
+                                         "class, website redirect location or "
+                                         "encryption attributes.")
+
         resp = req.get_response(self.app)
 
         if 'X-Amz-Copy-Source' in req.headers:
+            # resp.last_modified is a datetime.datetime object
             resp.append_copy_resp_body(req.controller_name,
-                                       last_modified)
+                                       resp.last_modified.isoformat()[:-6] +
+                                       '.000Z')
 
         resp.status = HTTP_OK
         return resp
@@ -113,7 +130,13 @@ class ObjectController(Controller):
         Handle DELETE Object request
         """
         try:
-            resp = req.get_response(self.app)
+            query = req.gen_multipart_manifest_delete_query(self.app)
+            resp = req.get_response(self.app, query=query)
+            if query and resp.status_int == HTTP_OK:
+                for chunk in resp.app_iter:
+                    pass  # drain the bulk-deleter response
+                resp.status = HTTP_NO_CONTENT
+                resp.body = ''
         except NoSuchKey:
             # expect to raise NoSuchBucket when the bucket doesn't exist
             exc_type, exc_value, exc_traceback = sys.exc_info()

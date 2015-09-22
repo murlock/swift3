@@ -95,7 +95,7 @@ class Request(swob.Request):
     def __init__(self, env, slo_enabled=True):
         swob.Request.__init__(self, env)
 
-        self.access_key, self.signature = self._parse_authorization()
+        self.access_key = self._parse_authorization()
         self.bucket_in_host = self._parse_host()
         self.container_name, self.object_name = self._parse_uri()
         self._validate_headers()
@@ -167,14 +167,14 @@ class Request(swob.Request):
             raise NotS3Request()
 
         try:
-            access_key, signature = info.rsplit(':', 1)
+            access_key = info.rsplit(':', 1)[0]
         except Exception:
             err_msg = 'AWS authorization header is invalid.  ' \
                 'Expected AwsAccessKeyId:signature'
             raise InvalidArgument('Authorization',
                                   self.headers['Authorization'], err_msg)
 
-        return access_key, signature
+        return access_key
 
     def _validate_headers(self):
         if 'CONTENT_LENGTH' in self.environ:
@@ -279,9 +279,9 @@ class Request(swob.Request):
         Similar to swob.Request.body, but it checks the content length before
         creating a body string.
         """
-        if self.headers.get('transfer-encoding'):
-            # FIXME: Raise error only when the input body is larger than
-            # 'max_length'.
+        te = self.headers.get('transfer-encoding', '')
+        te = [x.strip() for x in te.split(',') if x.strip()]
+        if te and (len(te) > 1 or te[-1] != 'chunked'):
             raise S3NotImplemented('A header you provided implies '
                                    'functionality that is not implemented',
                                    header='Transfer-Encoding')
@@ -289,7 +289,8 @@ class Request(swob.Request):
         if self.message_length() > max_length:
             raise MalformedXML()
 
-        body = swob.Request.body.fget(self)
+        # Limit the read similar to how SLO handles manifests
+        body = self.body_file.read(max_length)
 
         if check_md5:
             self.check_md5(body)
@@ -447,7 +448,7 @@ class Request(swob.Request):
 
         env = self.environ.copy()
 
-        for key in env:
+        for key in list(env.keys()):
             if key.startswith('HTTP_X_AMZ_META_'):
                 env['HTTP_X_OBJECT_META_' + key[16:]] = env[key]
                 del env[key]
@@ -456,6 +457,22 @@ class Request(swob.Request):
             env['HTTP_X_COPY_FROM'] = env['HTTP_X_AMZ_COPY_SOURCE']
             del env['HTTP_X_AMZ_COPY_SOURCE']
             env['CONTENT_LENGTH'] = '0'
+            # Content type cannot be modified on COPY
+            env.pop('CONTENT_TYPE', None)
+            if env.pop('HTTP_X_AMZ_METADATA_DIRECTIVE', None) == 'REPLACE':
+                env['HTTP_X_FRESH_METADATA'] = 'True'
+            else:
+                copy_exclude_headers = ('HTTP_CONTENT_DISPOSITION',
+                                        'HTTP_CONTENT_ENCODING',
+                                        'HTTP_CONTENT_LANGUAGE',
+                                        'HTTP_EXPIRES',
+                                        'HTTP_CACHE_CONTROL',
+                                        'HTTP_X_ROBOTS_TAG')
+                for key in copy_exclude_headers:
+                    env.pop(key, None)
+                for key in list(env.keys()):
+                    if key.startswith('HTTP_X_OBJECT_META_'):
+                        del env[key]
 
         if CONF.force_swift_request_proxy_log:
             env['swift.proxy_access_log_made'] = False
@@ -538,6 +555,7 @@ class Request(swob.Request):
                     HTTP_ACCEPTED,
                 ],
                 'DELETE': [
+                    HTTP_OK,
                     HTTP_NO_CONTENT,
                 ],
             }
@@ -735,6 +753,13 @@ class Request(swob.Request):
             resp = self.get_response(app, 'HEAD', self.container_name, '')
             return headers_to_container_info(
                 resp.sw_headers, resp.status_int)  # pylint: disable-msg=E1101
+
+    def gen_multipart_manifest_delete_query(self, app):
+        if not CONF.allow_multipart_uploads:
+            return None
+        query = {'multipart-manifest': 'delete'}
+        resp = self.get_response(app, 'HEAD')
+        return query if resp.is_slo else None
 
 
 class S3AclRequest(Request):

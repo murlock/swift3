@@ -60,9 +60,14 @@ class TestSwift3Obj(Swift3TestCase):
 
         self.response_headers = {'Content-Type': 'text/html',
                                  'Content-Length': len(self.object_body),
+                                 'Content-Disposition': 'inline',
+                                 'Content-Language': 'en',
                                  'x-object-meta-test': 'swift',
                                  'etag': self.etag,
-                                 'last-modified': self.last_modified}
+                                 'last-modified': self.last_modified,
+                                 'expires': 'Mon, 21 Sep 2015 12:00:00 GMT',
+                                 'x-robots-tag': 'nofollow',
+                                 'cache-control': 'private'}
 
         self.swift.register('GET', '/v1/AUTH_test/bucket/object',
                             swob.HTTPOk, self.response_headers,
@@ -80,15 +85,26 @@ class TestSwift3Obj(Swift3TestCase):
         status, headers, body = self.call_swift3(req)
         self.assertEquals(status.split()[0], '200')
 
+        unexpected_headers = []
         for key, val in self.response_headers.iteritems():
-            if key in ('content-length', 'content-type', 'content-encoding',
-                       'last-modified'):
-                self.assertTrue(key in headers)
-                self.assertEquals(headers[key], val)
+            if key in ('Content-Length', 'Content-Type', 'content-encoding',
+                       'last-modified', 'cache-control', 'Content-Disposition',
+                       'Content-Language', 'expires', 'x-robots-tag'):
+                self.assertIn(key, headers)
+                self.assertEquals(headers[key], str(val))
+
+            elif key == 'etag':
+                self.assertEquals(headers[key], '"%s"' % val)
 
             elif key.startswith('x-object-meta-'):
-                self.assertTrue('x-amz-meta-' + key[14:] in headers)
+                self.assertIn('x-amz-meta-' + key[14:], headers)
                 self.assertEquals(headers['x-amz-meta-' + key[14:]], val)
+
+            else:
+                unexpected_headers.append((key, val))
+
+        if unexpected_headers:
+                self.fail('unexpected headers: %r' % unexpected_headers)
 
         self.assertEquals(headers['etag'],
                           '"%s"' % self.response_headers['etag'])
@@ -418,7 +434,8 @@ class TestSwift3Obj(Swift3TestCase):
         _, _, headers = self.swift.calls_with_headers[-1]
         # Check that swift3 converts a Content-MD5 header into an etag.
         self.assertEquals(headers['ETag'], self.etag)
-        self.assertEquals(headers['X-Object-Meta-Something'], 'oh hai')
+        # Check that metadata is omited if no directive is specified
+        self.assertTrue(headers.get('X-Object-Meta-Something') is None)
         self.assertEquals(headers['X-Copy-From'], '/some/source')
         self.assertEquals(headers['Content-Length'], '0')
 
@@ -444,11 +461,157 @@ class TestSwift3Obj(Swift3TestCase):
         req.content_type = 'text/plain'
         return self.call_swift3(req)
 
+    def _test_object_PUT_copy_self(self, head_resp, put_header={}):
+        account = 'test:tester'
+        grants = [Grant(User(account), 'FULL_CONTROL')]
+        head_headers = \
+            encode_acl('object',
+                       ACL(Owner(account, account), grants))
+        head_headers.update({'last-modified': self.last_modified})
+        self.swift.register('HEAD', '/v1/AUTH_test/bucket/object',
+                            head_resp, head_headers, None)
+
+        put_headers = {'Authorization': 'AWS test:tester:hmac',
+                       'X-Amz-Copy-Source': '/bucket/object'}
+        put_headers.update(put_header)
+
+        req = Request.blank('/bucket/object',
+                            environ={'REQUEST_METHOD': 'PUT'},
+                            headers=put_headers)
+
+        req.date = datetime.now()
+        req.content_type = 'text/plain'
+        return self.call_swift3(req)
+
     @s3acl
     def test_object_PUT_copy(self):
-        last_modified = '2014-04-01T12:00:00'
+        last_modified = '2014-04-01T12:00:00.000Z'
         status, headers, body = \
             self._test_object_PUT_copy(swob.HTTPOk)
+        self.assertEquals(status.split()[0], '200')
+        self.assertEquals(headers['Content-Type'], 'application/xml')
+        self.assertTrue(headers.get('etag') is None)
+
+        elem = fromstring(body, 'CopyObjectResult')
+        self.assertEquals(elem.find('LastModified').text, last_modified)
+        self.assertEquals(elem.find('ETag').text, '"%s"' % self.etag)
+
+        _, _, headers = self.swift.calls_with_headers[-1]
+        self.assertEquals(headers['X-Copy-From'], '/some/source')
+        self.assertTrue(headers.get('X-Fresh-Metadata') is None)
+        self.assertEquals(headers['Content-Length'], '0')
+
+    @s3acl
+    def test_object_PUT_copy_metadata_replace(self):
+        last_modified = '2014-04-01T12:00:00'
+        status, headers, body = \
+            self._test_object_PUT_copy(swob.HTTPOk,
+                                       {'X-Amz-Metadata-Directive': 'REPLACE',
+                                        'X-Amz-Meta-Something': 'oh hai',
+                                        'Cache-Control': 'hello',
+                                        'content-disposition': 'how are you',
+                                        'content-encoding': 'good and you',
+                                        'content-language': 'great',
+                                        'content-type': 'so',
+                                        'expires': 'yeah',
+                                        'x-robots-tag': 'bye'})
+
+        self.assertEquals(status.split()[0], '200')
+        self.assertEquals(headers['Content-Type'], 'application/xml')
+        self.assertIsNone(headers.get('etag'))
+
+        elem = fromstring(body, 'CopyObjectResult')
+        self.assertEquals(elem.find('LastModified').text, last_modified)
+        self.assertEquals(elem.find('ETag').text, '"%s"' % self.etag)
+
+        _, _, headers = self.swift.calls_with_headers[-1]
+        self.assertEquals(headers['X-Copy-From'], '/some/source')
+        # Check that metadata is included if replace directive is specified
+        # and that Fresh Metadata is set
+        self.assertTrue(headers.get('X-Fresh-Metadata') == 'True')
+        self.assertEquals(headers['X-Object-Meta-Something'], 'oh hai')
+        # Check other metadata is set
+        self.assertEquals(headers['Cache-Control'], 'hello')
+        self.assertEquals(headers['Content-Disposition'], 'how are you')
+        self.assertEquals(headers['Content-Encoding'], 'good and you')
+        self.assertEquals(headers['Content-Language'], 'great')
+        # Content-Type can't be set during an S3 copy operation
+        self.assertIsNone(headers.get('Content-Type'))
+        self.assertEquals(headers['Expires'], 'yeah')
+        self.assertEquals(headers['X-Robots-Tag'], 'bye')
+
+        self.assertEquals(headers['Content-Length'], '0')
+
+    @s3acl
+    def test_object_PUT_copy_metadata_copy(self):
+        last_modified = '2014-04-01T12:00:00'
+        status, headers, body = \
+            self._test_object_PUT_copy(swob.HTTPOk,
+                                       {'X-Amz-Metadata-Directive': 'COPY',
+                                        'X-Amz-Meta-Something': 'oh hai',
+                                        'Cache-Control': 'hello',
+                                        'content-disposition': 'how are you',
+                                        'content-encoding': 'good and you',
+                                        'content-language': 'great',
+                                        'content-type': 'so',
+                                        'expires': 'yeah',
+                                        'x-robots-tag': 'bye'})
+        self.assertEquals(status.split()[0], '200')
+        self.assertEquals(headers['Content-Type'], 'application/xml')
+        self.assertIsNone(headers.get('etag'))
+
+        elem = fromstring(body, 'CopyObjectResult')
+        self.assertEquals(elem.find('LastModified').text, last_modified)
+        self.assertEquals(elem.find('ETag').text, '"%s"' % self.etag)
+
+        _, _, headers = self.swift.calls_with_headers[-1]
+        self.assertEquals(headers['X-Copy-From'], '/some/source')
+        # Check that metadata is omited if COPY directive is specified
+        self.assertIsNone(headers.get('X-Fresh-Metadata'))
+        self.assertIsNone(headers.get('X-Object-Meta-Something'))
+        self.assertIsNone(headers.get('Cache-Control'))
+        self.assertIsNone(headers.get('Content-Disposition'))
+        self.assertIsNone(headers.get('Content-Encoding'))
+        self.assertIsNone(headers.get('Content-Language'))
+        self.assertIsNone(headers.get('Content-Type'))
+        self.assertIsNone(headers.get('Expires'))
+        self.assertIsNone(headers.get('X-Robots-Tag'))
+
+        self.assertEquals(headers['Content-Length'], '0')
+
+    @s3acl
+    def test_object_PUT_copy_self(self):
+        status, headers, body = \
+            self._test_object_PUT_copy_self(swob.HTTPOk)
+        self.assertEquals(status.split()[0], '400')
+        elem = fromstring(body, 'Error')
+        err_msg = ("This copy request is illegal because it is trying to copy "
+                   "an object to itself without changing the object's "
+                   "metadata, storage class, website redirect location or "
+                   "encryption attributes.")
+        self.assertEquals(elem.find('Code').text, 'InvalidRequest')
+        self.assertEquals(elem.find('Message').text, err_msg)
+
+    @s3acl
+    def test_object_PUT_copy_self_metadata_copy(self):
+        header = {'x-amz-metadata-directive': 'COPY'}
+        status, headers, body = \
+            self._test_object_PUT_copy_self(swob.HTTPOk, header)
+        self.assertEquals(status.split()[0], '400')
+        elem = fromstring(body, 'Error')
+        err_msg = ("This copy request is illegal because it is trying to copy "
+                   "an object to itself without changing the object's "
+                   "metadata, storage class, website redirect location or "
+                   "encryption attributes.")
+        self.assertEquals(elem.find('Code').text, 'InvalidRequest')
+        self.assertEquals(elem.find('Message').text, err_msg)
+
+    @s3acl
+    def test_object_PUT_copy_self_metadata_replace(self):
+        last_modified = '2014-04-01T12:00:00'
+        header = {'x-amz-metadata-directive': 'REPLACE'}
+        status, headers, body = \
+            self._test_object_PUT_copy_self(swob.HTTPOk, header)
         self.assertEquals(status.split()[0], '200')
         self.assertEquals(headers['Content-Type'], 'application/xml')
         self.assertTrue(headers.get('etag') is None)
@@ -457,7 +620,7 @@ class TestSwift3Obj(Swift3TestCase):
         self.assertEquals(elem.find('ETag').text, '"%s"' % self.etag)
 
         _, _, headers = self.swift.calls_with_headers[-1]
-        self.assertEquals(headers['X-Copy-From'], '/some/source')
+        self.assertEquals(headers['X-Copy-From'], '/bucket/object')
         self.assertEquals(headers['Content-Length'], '0')
 
     @s3acl
@@ -602,12 +765,63 @@ class TestSwift3Obj(Swift3TestCase):
             self.assertEquals(code, 'NoSuchBucket')
 
     @s3acl
-    def test_object_DELETE(self):
+    @patch('swift3.cfg.CONF.allow_multipart_uploads', False)
+    def test_object_DELETE_no_multipart(self):
         req = Request.blank('/bucket/object',
                             environ={'REQUEST_METHOD': 'DELETE'},
                             headers={'Authorization': 'AWS test:tester:hmac'})
         status, headers, body = self.call_swift3(req)
         self.assertEquals(status.split()[0], '204')
+
+        self.assertNotIn(('HEAD', '/v1/AUTH_test/bucket/object'),
+                         self.swift.calls)
+        self.assertIn(('DELETE', '/v1/AUTH_test/bucket/object'),
+                      self.swift.calls)
+        _, path = self.swift.calls[-1]
+        self.assertEquals(path.count('?'), 0)
+
+    @s3acl
+    def test_object_DELETE_multipart(self):
+        req = Request.blank('/bucket/object',
+                            environ={'REQUEST_METHOD': 'DELETE'},
+                            headers={'Authorization': 'AWS test:tester:hmac'})
+        status, headers, body = self.call_swift3(req)
+        self.assertEquals(status.split()[0], '204')
+
+        self.assertIn(('HEAD', '/v1/AUTH_test/bucket/object'),
+                      self.swift.calls)
+        self.assertIn(('DELETE', '/v1/AUTH_test/bucket/object'),
+                      self.swift.calls)
+        _, path = self.swift.calls[-1]
+        self.assertEquals(path.count('?'), 0)
+
+    @s3acl
+    def test_slo_object_DELETE(self):
+        self.swift.register('HEAD', '/v1/AUTH_test/bucket/object',
+                            swob.HTTPOk,
+                            {'x-static-large-object': 'True'},
+                            None)
+        self.swift.register('DELETE', '/v1/AUTH_test/bucket/object',
+                            swob.HTTPOk, {}, '<SLO delete results>')
+        req = Request.blank('/bucket/object',
+                            environ={'REQUEST_METHOD': 'DELETE'},
+                            headers={'Authorization': 'AWS test:tester:hmac'})
+        status, headers, body = self.call_swift3(req)
+        self.assertEqual(status.split()[0], '204')
+        self.assertEqual(body, '')
+
+        self.assertIn(('HEAD', '/v1/AUTH_test/bucket/object'),
+                      self.swift.calls)
+        self.assertIn(('DELETE', '/v1/AUTH_test/bucket/object'
+                                 '?multipart-manifest=delete'),
+                      self.swift.calls)
+        _, path = self.swift.calls[-1]
+        path, query_string = path.split('?', 1)
+        query = {}
+        for q in query_string.split('&'):
+            key, arg = q.split('=')
+            query[key] = arg
+        self.assertEquals(query['multipart-manifest'], 'delete')
 
     def _test_object_for_s3acl(self, method, account):
         req = Request.blank('/bucket/object',

@@ -34,9 +34,6 @@ class HeaderKey(str):
         if self.lower().startswith('x-amz-'):
             # AWS headers returned by S3 are lowercase.
             return self.lower()
-        if self.lower().startswith('x-rgw-'):
-            # ceph/s3tests expects the header is lowercase.
-            return self.lower()
         return str.title(self)
 
 
@@ -87,6 +84,7 @@ class Response(ResponseBase, swob.Response):
         sw_sysmeta_headers = swob.HeaderKeyDict()
         sw_headers = swob.HeaderKeyDict()
         headers = HeaderKeyDict()
+        self.is_slo = False
 
         for key, val in self.headers.iteritems():
             _key = key.lower()
@@ -104,14 +102,13 @@ class Response(ResponseBase, swob.Response):
                 headers['x-amz-meta-' + _key[14:]] = val
             elif _key in ('content-length', 'content-type',
                           'content-range', 'content-encoding',
-                          'etag', 'last-modified'):
+                          'content-disposition', 'content-language',
+                          'etag', 'last-modified', 'x-robots-tag',
+                          'cache-control', 'expires'):
                 headers[key] = val
-            elif _key == 'x-container-object-count':
-                # for ceph/s3tests
-                headers['x-rgw-object-count'] = val
-            elif _key == 'x-container-bytes-used':
-                # for ceph/s3tests
-                headers['x-rgw-bytes-used'] = val
+            elif _key == 'x-static-large-object':
+                # for delete slo
+                self.is_slo = val
 
         self.headers = headers
         # Used for pure swift header handling at the request layer
