@@ -15,7 +15,7 @@
 
 import re
 import md5
-from urllib import quote
+from urllib import quote, unquote
 import base64
 import email.utils
 import datetime
@@ -319,7 +319,7 @@ class Request(swob.Request):
         check_copy_source checks the copy source existence
         """
         if 'X-Amz-Copy-Source' in self.headers:
-            src_path = self.headers['X-Amz-Copy-Source']
+            src_path = unquote(self.headers['X-Amz-Copy-Source'])
             src_path = src_path if src_path.startswith('/') else \
                 ('/' + src_path)
             src_bucket, src_obj = split_path(src_path, 0, 2, True)
@@ -442,7 +442,7 @@ class Request(swob.Request):
 
         env = self.environ.copy()
 
-        for key in env:
+        for key in list(env.keys()):
             if key.startswith('HTTP_X_AMZ_META_'):
                 env['HTTP_X_OBJECT_META_' + key[16:]] = env[key]
                 del env[key]
@@ -451,6 +451,22 @@ class Request(swob.Request):
             env['HTTP_X_COPY_FROM'] = env['HTTP_X_AMZ_COPY_SOURCE']
             del env['HTTP_X_AMZ_COPY_SOURCE']
             env['CONTENT_LENGTH'] = '0'
+            # Content type cannot be modified on COPY
+            env.pop('CONTENT_TYPE', None)
+            if env.pop('HTTP_X_AMZ_METADATA_DIRECTIVE', None) == 'REPLACE':
+                env['HTTP_X_FRESH_METADATA'] = 'True'
+            else:
+                copy_exclude_headers = ('HTTP_CONTENT_DISPOSITION',
+                                        'HTTP_CONTENT_ENCODING',
+                                        'HTTP_CONTENT_LANGUAGE',
+                                        'HTTP_EXPIRES',
+                                        'HTTP_CACHE_CONTROL',
+                                        'HTTP_X_ROBOTS_TAG')
+                for key in copy_exclude_headers:
+                    env.pop(key, None)
+                for key in list(env.keys()):
+                    if key.startswith('HTTP_X_OBJECT_META_'):
+                        del env[key]
 
         if CONF.force_swift_request_proxy_log:
             env['swift.proxy_access_log_made'] = False
