@@ -21,8 +21,8 @@ from swift.common.swob import Range, content_range_header_value
 from swift.common.utils import split_path
 
 from swift3.controllers.base import Controller
-from swift3.response import (S3NotImplemented, InvalidRange, NoSuchKey,
-                             InvalidRequest)
+from swift3.response import S3NotImplemented, InvalidRange, NoSuchKey, \
+    InvalidArgument, InvalidRequest
 
 
 class ObjectController(Controller):
@@ -98,6 +98,11 @@ class ObjectController(Controller):
         """
         Handle PUT Object and PUT Object (Copy) request
         """
+        if all(h in req.headers
+               for h in ('X-Amz-Copy-Source', 'X-Amz-Copy-Source-Range')):
+            raise InvalidArgument('x-amz-copy-source-range',
+                                  req.headers['X-Amz-Copy-Source-Range'],
+                                  'Illegal copy header')
         req.check_copy_source(self.app)
 
         if 'X-Amz-Copy-Source' in req.headers:
@@ -147,6 +152,7 @@ class ObjectController(Controller):
         """
         try:
             query = req.gen_multipart_manifest_delete_query(self.app)
+            req.headers['Content-Type'] = None  # Ignore client content-type
             resp = req.get_response(self.app, query=query)
             if query and resp.status_int == HTTP_OK:
                 for chunk in resp.app_iter:
