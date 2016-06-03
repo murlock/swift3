@@ -160,7 +160,7 @@ class S3Token(object):
         except ValueError:
             msg = 'You have an invalid Authorization header: %s'
             self._logger.debug(msg, auth_header)
-            return self._deny_request('InvalidURI')(environ, start_response)
+            return self.app(environ, start_response)
 
         # NOTE(chmou): This is to handle the special case with nova
         # when we have the option s3_affix_tenant. We will force it to
@@ -198,7 +198,7 @@ class S3Token(object):
             resp = e.args[0]  # NB: swob.Response, not requests.Response
             msg = 'Received error, exiting middleware with error: %s'
             self._logger.debug(msg, resp.status_int)
-            return resp(environ, start_response)
+            return self.app(environ, start_response)
 
         self._logger.debug('Keystone Reply: Status: %d, Output: %s',
                            resp.status_code, resp.content)
@@ -210,7 +210,7 @@ class S3Token(object):
         except (ValueError, KeyError):
             error = 'Error on keystone reply: %d %s'
             self._logger.debug(error, resp.status_code, resp.content)
-            return self._deny_request('InvalidURI')(environ, start_response)
+            return self.app(environ, start_response)
 
         req.headers['X-Auth-Token'] = token_id
         tenant_to_connect = force_tenant or tenant['id']
