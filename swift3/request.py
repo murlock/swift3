@@ -19,8 +19,9 @@ from hashlib import sha256
 import md5
 import re
 import six
+# pylint: disable-msg=import-error
+from six.moves.urllib.parse import quote, unquote, parse_qsl
 import string
-from urllib import quote, unquote
 
 from swift.common.utils import split_path
 from swift.common import swob
@@ -46,7 +47,7 @@ from swift3.response import AccessDenied, InvalidArgument, InvalidDigest, \
     InternalError, NoSuchBucket, NoSuchKey, PreconditionFailed, InvalidRange, \
     MissingContentLength, InvalidStorageClass, S3NotImplemented, InvalidURI, \
     MalformedXML, InvalidRequest, RequestTimeout, InvalidBucketName, \
-    BadDigest, AuthorizationHeaderMalformed
+    BadDigest, AuthorizationHeaderMalformed, AuthorizationQueryParametersError
 from swift3.exception import NotS3Request, BadSwiftRequest
 from swift3.utils import utf8encode, LOGGER, check_path_header, S3Timestamp, \
     mktime
@@ -95,8 +96,6 @@ def _header_acl_property(resource):
 class SigV4Mixin(object):
     """
     A request class mixin to provide S3 signature v4 functionality
-
-    :param req_cls: a Request class (Request or S3AclRequest or child classes)
     """
 
     @property
@@ -139,8 +138,24 @@ class SigV4Mixin(object):
         """
         :param now: a S3Timestamp instance
         """
-        expires = self.params['X-Amz-Expires']
-        if int(self.timestamp) + int(expires) < S3Timestamp.now():
+        err = None
+        try:
+            expires = int(self.params['X-Amz-Expires'])
+        except ValueError:
+            err = 'X-Amz-Expires should be a number'
+        else:
+            if expires < 0:
+                err = 'X-Amz-Expires must be non-negative'
+            elif expires >= 2 ** 63:
+                err = 'X-Amz-Expires should be a number'
+            elif expires > 604800:
+                err = ('X-Amz-Expires must be less than a week (in seconds); '
+                       'that is, the given X-Amz-Expires must be less than '
+                       '604800 seconds')
+        if err:
+            raise AuthorizationQueryParametersError(err)
+
+        if int(self.timestamp) + expires < S3Timestamp.now():
             raise AccessDenied('Request has expired')
 
     def _parse_query_authentication(self):
@@ -288,7 +303,7 @@ class SigV4Mixin(object):
 
         # 5. Add signed headers into canonical request like
         # content-type;host;x-amz-date
-        cr.append(';'.join(sorted(n for n in headers_to_sign)))
+        cr.append(';'.join(sorted(headers_to_sign)))
 
         # 6. Add payload string at the tail
         if 'X-Amz-Credential' in self.params:
@@ -452,8 +467,6 @@ class Request(swob.Request):
         try:
             access = self.params['AWSAccessKeyId']
             expires = self.params['Expires']
-            # TODO: can we remove this logic here?
-            # self.headers['Date'] = expires
             sig = self.params['Signature']
         except KeyError:
             raise AccessDenied()
@@ -504,6 +517,11 @@ class Request(swob.Request):
 
         if S3Timestamp.now() > ex:
             raise AccessDenied('Request has expired')
+
+        if ex >= 2 ** 31:
+            raise AccessDenied(
+                'Invalid date (should be seconds since epoch): %s' %
+                self.params['Expires'])
 
     def _validate_dates(self):
         if self._is_query_auth:
@@ -614,8 +632,13 @@ class Request(swob.Request):
         if self.message_length() > max_length:
             raise MalformedXML()
 
-        # Limit the read similar to how SLO handles manifests
-        body = self.body_file.read(max_length)
+        if te or self.message_length():
+            # Limit the read similar to how SLO handles manifests
+            body = self.body_file.read(max_length)
+        else:
+            # No (or zero) Content-Length provided, and not chunked transfer;
+            # assume empty.
+            body = ''
 
         if check_md5:
             self.check_md5(body)
@@ -646,13 +669,30 @@ class Request(swob.Request):
 
         :returns: the source HEAD response
         """
-        if 'X-Amz-Copy-Source' not in self.headers:
+        try:
+            src_path = self.headers['X-Amz-Copy-Source']
+        except KeyError:
             return None
 
-        src_path = unquote(self.headers['X-Amz-Copy-Source'])
-        src_path = src_path if src_path.startswith('/') else \
-            ('/' + src_path)
+        if '?' in src_path:
+            src_path, qs = src_path.split('?', 1)
+            query = parse_qsl(qs, True)
+            if not query:
+                pass  # ignore it
+            elif len(query) > 1 or query[0][0] != 'versionId':
+                raise InvalidArgument('X-Amz-Copy-Source',
+                                      self.headers['X-Amz-Copy-Source'],
+                                      'Unsupported copy source parameter.')
+            elif query[0][1] != 'null':
+                # TODO: once we support versioning, we'll need to translate
+                # src_path to the proper location in the versions container
+                raise S3NotImplemented('Versioning is not yet supported')
+            self.headers['X-Amz-Copy-Source'] = src_path
+
+        src_path = unquote(src_path)
+        src_path = src_path if src_path.startswith('/') else ('/' + src_path)
         src_bucket, src_obj = split_path(src_path, 0, 2, True)
+
         headers = swob.HeaderKeyDict()
         headers.update(self._copy_source_headers())
 
@@ -699,10 +739,17 @@ class Request(swob.Request):
                                   if key.lower().startswith('x-amz-'))):
             amz_headers[amz_header] = self.headers[amz_header]
 
-        if 'x-amz-date' in amz_headers:
-            buf += "\n"
-        elif 'Date' in self.headers:
-            buf += "%s\n" % self.headers['Date']
+        if self._is_header_auth:
+            if 'x-amz-date' in amz_headers:
+                buf += "\n"
+            elif 'Date' in self.headers:
+                buf += "%s\n" % self.headers['Date']
+        elif self._is_query_auth:
+            buf += "%s\n" % self.params['Expires']
+        else:
+            # Should have already raised NotS3Request in _parse_auth_info,
+            # but as a sanity check...
+            raise AccessDenied()
 
         for k in sorted(key.lower() for key in amz_headers):
             buf += "%s:%s\n" % (k, amz_headers[k])
