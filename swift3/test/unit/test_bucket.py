@@ -22,6 +22,7 @@ from swift.common.swob import Request
 from swift.common.utils import json
 
 from swift3.test.unit import Swift3TestCase
+from swift3.test.unit.helpers import UnreadableInput
 from swift3.etree import Element, SubElement, fromstring, tostring
 from swift3.test.unit.test_s3_acl import s3acl
 from swift3.subresource import Owner, encode_acl, ACLPublicRead
@@ -677,6 +678,8 @@ class TestSwift3Bucket(Swift3TestCase):
         status, headers, body = self.call_swift3(req)
         if self.swift3.bucket_db:
             self.swift3.bucket_db.release('bucket')
+
+        self.assertEqual(body, '')
         self.assertEqual(status.split()[0], '200')
         self.assertEqual(headers['Location'], '/bucket')
 
@@ -690,8 +693,20 @@ class TestSwift3Bucket(Swift3TestCase):
         status, headers, body = self.call_swift3(req)
         if self.swift3.bucket_db:
             self.swift3.bucket_db.release('bucket')
+
+        self.assertEqual(body, '')
         self.assertEqual(status.split()[0], '200')
         self.assertEqual(headers['Location'], '/bucket')
+
+        with UnreadableInput(self) as fake_input:
+            req = Request.blank(
+                '/bucket',
+                environ={'REQUEST_METHOD': 'PUT',
+                         'wsgi.input': fake_input},
+                headers={'Authorization': 'AWS test:tester:hmac',
+                         'Date': self.get_date_header()})
+            status, headers, body = self.call_swift3(req)
+        self.assertEqual(body, '')
 
     def _test_bucket_PUT_with_location(self, root_element):
         elem = Element(root_element)
