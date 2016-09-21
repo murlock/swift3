@@ -131,7 +131,11 @@ class Swift3Middleware(object):
 
     def handle_request(self, req):
         LOGGER.debug('Calling Swift3 Middleware')
-        LOGGER.debug(req.__dict__)
+        dict_to_log = dict(req.__dict__)
+        dict_to_log['environ'] = dict(dict_to_log['environ'])
+        if 'swiftstack.auth.users_db' in dict_to_log['environ']:
+            del dict_to_log['environ']['swiftstack.auth.users_db']
+        LOGGER.debug(dict_to_log)
 
         controller = req.controller(self.s3_app)
         if hasattr(controller, req.method):
