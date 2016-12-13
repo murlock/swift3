@@ -138,6 +138,7 @@ class S3TokenMiddlewareTestBase(unittest.TestCase):
         self.app = FakeApp()
         self.conf = {
             'auth_uri': self.TEST_AUTH_URI,
+            'delay_auth_decision': 'no',
         }
         self.middleware = s3_token.S3Token(self.app, self.conf)
 

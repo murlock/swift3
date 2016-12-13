@@ -126,7 +126,7 @@ class S3Token(object):
             raise ValueError('http_timeout must be between 0 and 60 seconds')
         self._reseller_prefix = conf.get('reseller_prefix', 'AUTH_')
         self._delay_auth_decision = config_true_value(
-            conf.get('delay_auth_decision'))
+            conf.get('delay_auth_decision', True))
 
         # where to find the auth service (we use this to validate tokens)
         self._request_uri = conf.get('auth_uri')
