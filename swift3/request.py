@@ -14,13 +14,14 @@
 # limitations under the License.
 
 import base64
+from collections import defaultdict
 from email.header import Header
-from hashlib import sha256
-import md5
+from hashlib import sha256, md5
 import re
 import six
+# pylint: disable-msg=import-error
+from six.moves.urllib.parse import quote, unquote, parse_qsl
 import string
-from urllib import quote, unquote
 
 from swift.common.utils import split_path
 from swift.common import swob
@@ -46,7 +47,7 @@ from swift3.response import AccessDenied, InvalidArgument, InvalidDigest, \
     InternalError, NoSuchBucket, NoSuchKey, PreconditionFailed, InvalidRange, \
     MissingContentLength, InvalidStorageClass, S3NotImplemented, InvalidURI, \
     MalformedXML, InvalidRequest, RequestTimeout, InvalidBucketName, \
-    BadDigest, AuthorizationHeaderMalformed
+    BadDigest, AuthorizationHeaderMalformed, AuthorizationQueryParametersError
 from swift3.exception import NotS3Request, BadSwiftRequest
 from swift3.utils import utf8encode, LOGGER, check_path_header, S3Timestamp, \
     mktime
@@ -74,6 +75,19 @@ SIGV2_TIMESTAMP_FORMAT = '%Y-%m-%dT%H:%M:%S'
 SIGV4_X_AMZ_DATE_FORMAT = '%Y%m%dT%H%M%SZ'
 
 
+def _header_strip(value):
+    # S3 seems to strip *all* control characters
+    if value is None:
+        return None
+    stripped = _header_strip.re.sub('', value)
+    if value and not stripped:
+        # If there's nothing left after stripping,
+        # behave as though it wasn't provided
+        return None
+    return stripped
+_header_strip.re = re.compile('^[\x00-\x20]*|[\x00-\x20]*$')
+
+
 def _header_acl_property(resource):
     """
     Set and retrieve the acl in self.headers
@@ -95,8 +109,6 @@ def _header_acl_property(resource):
 class SigV4Mixin(object):
     """
     A request class mixin to provide S3 signature v4 functionality
-
-    :param req_cls: a Request class (Request or S3AclRequest or child classes)
     """
 
     @property
@@ -137,10 +149,29 @@ class SigV4Mixin(object):
 
     def _validate_expire_param(self):
         """
-        :param now: a S3Timestamp instance
+        Validate X-Amz-Expires in query parameter
+        :raises: AccessDenied
+        :raises: AuthorizationQueryParametersError
+        :raises: AccessDenined
         """
-        expires = self.params['X-Amz-Expires']
-        if int(self.timestamp) + int(expires) < S3Timestamp.now():
+        err = None
+        try:
+            expires = int(self.params['X-Amz-Expires'])
+        except ValueError:
+            err = 'X-Amz-Expires should be a number'
+        else:
+            if expires < 0:
+                err = 'X-Amz-Expires must be non-negative'
+            elif expires >= 2 ** 63:
+                err = 'X-Amz-Expires should be a number'
+            elif expires > 604800:
+                err = ('X-Amz-Expires must be less than a week (in seconds); '
+                       'that is, the given X-Amz-Expires must be less than '
+                       '604800 seconds')
+        if err:
+            raise AuthorizationQueryParametersError(err)
+
+        if int(self.timestamp) + expires < S3Timestamp.now():
             raise AccessDenied('Request has expired')
 
     def _parse_query_authentication(self):
@@ -219,9 +250,18 @@ class SigV4Mixin(object):
 
         :return : dict of headers to sign, the keys are all lower case
         """
-        headers_lower_dict = dict(
-            (k.lower().strip(), ' '.join((v or '').strip().split()))
-            for (k, v) in six.iteritems(self.headers))
+        if 'headers_raw' in self.environ:  # eventlet >= 0.19.0
+            # See https://github.com/eventlet/eventlet/commit/67ec999
+            headers_lower_dict = defaultdict(list)
+            for key, value in self.environ['headers_raw']:
+                headers_lower_dict[key.lower().strip()].append(
+                    ' '.join(_header_strip(value or '').split()))
+            headers_lower_dict = {k: ','.join(v)
+                                  for k, v in headers_lower_dict.items()}
+        else:  # mostly-functional fallback
+            headers_lower_dict = dict(
+                (k.lower().strip(), ' '.join(_header_strip(v or '').split()))
+                for (k, v) in six.iteritems(self.headers))
 
         if 'host' in headers_lower_dict and re.match(
                 'Boto/2.[0-9].[0-2]',
@@ -233,7 +273,7 @@ class SigV4Mixin(object):
                 headers_lower_dict['host'].split(':')[0]
 
         headers_to_sign = [
-            (key, value) for key, value in headers_lower_dict.items()
+            (key, value) for key, value in sorted(headers_lower_dict.items())
             if key in self._signed_headers]
 
         if len(headers_to_sign) != len(self._signed_headers):
@@ -244,15 +284,15 @@ class SigV4Mixin(object):
             # process.
             raise SignatureDoesNotMatch()
 
-        return dict(headers_to_sign)
+        return headers_to_sign
 
-    def _string_to_sign(self):
+    def _canonical_uri(self):
         """
-        Create 'StringToSign' value in Amazon terminology for v4.
+        It won't require bucket name in canonical_uri for v4.
         """
-        scope = (self.timestamp.amz_date_format.split('T')[0] +
-                 '/' + CONF.location + '/s3/aws4_request')
+        return self.environ.get('RAW_PATH_INFO', self.path)
 
+    def _canonical_request(self):
         # prepare 'canonical_request'
         # Example requests are like following:
         #
@@ -282,13 +322,12 @@ class SigV4Mixin(object):
         # host:iam.amazonaws.com
         # x-amz-date:20150830T123600Z
         headers_to_sign = self._headers_to_sign()
-        cr.append('\n'.join(
-            ['%s:%s' % (key, value) for key, value in
-             sorted(headers_to_sign.items())]) + '\n')
+        cr.append(''.join('%s:%s\n' % (key, value)
+                          for key, value in headers_to_sign))
 
         # 5. Add signed headers into canonical request like
         # content-type;host;x-amz-date
-        cr.append(';'.join(sorted(n for n in headers_to_sign)))
+        cr.append(';'.join(k for k, v in headers_to_sign))
 
         # 6. Add payload string at the tail
         if 'X-Amz-Credential' in self.params:
@@ -301,12 +340,19 @@ class SigV4Mixin(object):
         else:
             hashed_payload = self.headers['X-Amz-Content-SHA256']
         cr.append(hashed_payload)
-        canonical_request = '\n'.join(cr)
+        return '\n'.join(cr).encode('utf-8')
+
+    def _string_to_sign(self):
+        """
+        Create 'StringToSign' value in Amazon terminology for v4.
+        """
+        scope = (self.timestamp.amz_date_format.split('T')[0] +
+                 '/' + CONF.location + '/s3/aws4_request')
 
         return ('AWS4-HMAC-SHA256' + '\n'
                 + self.timestamp.amz_date_format + '\n'
                 + scope + '\n'
-                + sha256(canonical_request.encode('utf-8')).hexdigest())
+                + sha256(self._canonical_request()).hexdigest())
 
 
 def get_request_class(env):
@@ -374,7 +420,7 @@ class Request(swob.Request):
         if not self._timestamp:
             try:
                 if self._is_query_auth and 'Timestamp' in self.params:
-                    # If Timestamp speciied in query, it should be prior
+                    # If Timestamp specified in query, it should be prior
                     # to any Date header (is this right?)
                     timestamp = mktime(
                         self.params['Timestamp'], SIGV2_TIMESTAMP_FORMAT)
@@ -452,8 +498,6 @@ class Request(swob.Request):
         try:
             access = self.params['AWSAccessKeyId']
             expires = self.params['Expires']
-            # TODO: can we remove this logic here?
-            # self.headers['Date'] = expires
             sig = self.params['Signature']
         except KeyError:
             raise AccessDenied()
@@ -494,7 +538,8 @@ class Request(swob.Request):
 
     def _validate_expire_param(self):
         """
-        Validate Expire param
+        Validate Expires in query parameters
+        :raises: AccessDenied
         """
         # Expires header is a float since epoch
         try:
@@ -505,7 +550,17 @@ class Request(swob.Request):
         if S3Timestamp.now() > ex:
             raise AccessDenied('Request has expired')
 
+        if ex >= 2 ** 31:
+            raise AccessDenied(
+                'Invalid date (should be seconds since epoch): %s' %
+                self.params['Expires'])
+
     def _validate_dates(self):
+        """
+        Validate Date/X-Amz-Date headers for signature v2
+        :raises: AccessDenied
+        :raises: RequestTimeTooSkewed
+        """
         if self._is_query_auth:
             self._validate_expire_param()
             # TODO: make sure the case if timestamp param in query
@@ -540,8 +595,8 @@ class Request(swob.Request):
 
         self._validate_dates()
 
-        if 'Content-MD5' in self.headers:
-            value = self.headers['Content-MD5']
+        value = _header_strip(self.headers.get('Content-MD5'))
+        if value is not None:
             if not re.match('^[A-Za-z0-9+/]+={0,2}$', value):
                 # Non-base64-alphabet characters in value.
                 raise InvalidDigest(content_md5=value)
@@ -627,7 +682,7 @@ class Request(swob.Request):
             raise InvalidRequest('Missing required header for this request: '
                                  'Content-MD5')
 
-        digest = md5.new(body).digest().encode('base64').strip()
+        digest = md5(body).digest().encode('base64').strip()
         if self.environ['HTTP_CONTENT_MD5'] != digest:
             raise BadDigest(content_md5=self.environ['HTTP_CONTENT_MD5'])
 
@@ -646,13 +701,30 @@ class Request(swob.Request):
 
         :returns: the source HEAD response
         """
-        if 'X-Amz-Copy-Source' not in self.headers:
+        try:
+            src_path = self.headers['X-Amz-Copy-Source']
+        except KeyError:
             return None
 
-        src_path = unquote(self.headers['X-Amz-Copy-Source'])
-        src_path = src_path if src_path.startswith('/') else \
-            ('/' + src_path)
+        if '?' in src_path:
+            src_path, qs = src_path.split('?', 1)
+            query = parse_qsl(qs, True)
+            if not query:
+                pass  # ignore it
+            elif len(query) > 1 or query[0][0] != 'versionId':
+                raise InvalidArgument('X-Amz-Copy-Source',
+                                      self.headers['X-Amz-Copy-Source'],
+                                      'Unsupported copy source parameter.')
+            elif query[0][1] != 'null':
+                # TODO: once we support versioning, we'll need to translate
+                # src_path to the proper location in the versions container
+                raise S3NotImplemented('Versioning is not yet supported')
+            self.headers['X-Amz-Copy-Source'] = src_path
+
+        src_path = unquote(src_path)
+        src_path = src_path if src_path.startswith('/') else ('/' + src_path)
         src_bucket, src_obj = split_path(src_path, 0, 2, True)
+
         headers = swob.HeaderKeyDict()
         headers.update(self._copy_source_headers())
 
@@ -680,6 +752,9 @@ class Request(swob.Request):
         return src_resp
 
     def _canonical_uri(self):
+        """
+        Require bucket name in canonical_uri for v2 in virtual hosted-style.
+        """
         raw_path_info = self.environ.get('RAW_PATH_INFO', self.path)
         if self.bucket_in_host:
             raw_path_info = '/' + self.bucket_in_host + raw_path_info
@@ -691,35 +766,54 @@ class Request(swob.Request):
         """
         amz_headers = {}
 
-        buf = "%s\n%s\n%s\n" % (self.method,
-                                self.headers.get('Content-MD5', ''),
-                                self.headers.get('Content-Type') or '')
+        buf = [self.method,
+               _header_strip(self.headers.get('Content-MD5')) or '',
+               _header_strip(self.headers.get('Content-Type')) or '']
 
-        for amz_header in sorted((key.lower() for key in self.headers
-                                  if key.lower().startswith('x-amz-'))):
-            amz_headers[amz_header] = self.headers[amz_header]
+        if 'headers_raw' in self.environ:  # eventlet >= 0.19.0
+            # See https://github.com/eventlet/eventlet/commit/67ec999
+            amz_headers = defaultdict(list)
+            for key, value in self.environ['headers_raw']:
+                key = key.lower()
+                if not key.startswith('x-amz-'):
+                    continue
+                amz_headers[key.strip()].append(value.strip())
+            amz_headers = dict((key, ','.join(value))
+                               for key, value in amz_headers.items())
+        else:  # mostly-functional fallback
+            amz_headers = dict((key.lower(), value)
+                               for key, value in self.headers.items()
+                               if key.lower().startswith('x-amz-'))
 
-        if 'x-amz-date' in amz_headers:
-            buf += "\n"
-        elif 'Date' in self.headers:
-            buf += "%s\n" % self.headers['Date']
+        if self._is_header_auth:
+            if 'x-amz-date' in amz_headers:
+                buf.append('')
+            elif 'Date' in self.headers:
+                buf.append(self.headers['Date'])
+        elif self._is_query_auth:
+            buf.append(self.params['Expires'])
+        else:
+            # Should have already raised NotS3Request in _parse_auth_info,
+            # but as a sanity check...
+            raise AccessDenied()
 
-        for k in sorted(key.lower() for key in amz_headers):
-            buf += "%s:%s\n" % (k, amz_headers[k])
+        for key, value in sorted(amz_headers.items()):
+            buf.append("%s:%s" % (key, value))
 
         path = self._canonical_uri()
         if self.query_string:
             path += '?' + self.query_string
+        params = []
         if '?' in path:
             path, args = path.split('?', 1)
-            params = []
             for key, value in sorted(self.params.items()):
                 if key in ALLOWED_SUB_RESOURCES:
                     params.append('%s=%s' % (key, value) if value else key)
-            if params:
-                return '%s%s?%s' % (buf, path, '&'.join(params))
-
-        return buf + path
+        if params:
+            buf.append('%s?%s' % (path, '&'.join(params)))
+        else:
+            buf.append(path)
+        return '\n'.join(buf)
 
     @property
     def controller_name(self):
@@ -790,15 +884,48 @@ class Request(swob.Request):
 
         env = self.environ.copy()
 
-        for key in self.environ:
-            if key.startswith('HTTP_X_AMZ_META_'):
-                if not(set(env[key]).issubset(string.printable)):
-                    env[key] = Header(env[key], 'UTF-8').encode()
-                    if env[key].startswith('=?utf-8?q?'):
-                        env[key] = '=?UTF-8?Q?' + env[key][10:]
-                    elif env[key].startswith('=?utf-8?b?'):
-                        env[key] = '=?UTF-8?B?' + env[key][10:]
-                env['HTTP_X_OBJECT_META_' + key[16:]] = env[key]
+        def sanitize(value):
+            if set(value).issubset(string.printable):
+                return value
+
+            value = Header(value, 'UTF-8').encode()
+            if value.startswith('=?utf-8?q?'):
+                return '=?UTF-8?Q?' + value[10:]
+            elif value.startswith('=?utf-8?b?'):
+                return '=?UTF-8?B?' + value[10:]
+            else:
+                return value
+
+        if 'headers_raw' in env:  # eventlet >= 0.19.0
+            # See https://github.com/eventlet/eventlet/commit/67ec999
+            for key, value in env['headers_raw']:
+                if not key.lower().startswith('x-amz-meta-'):
+                    continue
+                # AWS ignores user-defined headers with these characters
+                if any(c in key for c in ' "),/;<=>?@[\\]{}'):
+                    # NB: apparently, '(' *is* allowed
+                    continue
+                # Note that this may have already been deleted, e.g. if the
+                # client sent multiple headers with the same name, or both
+                # x-amz-meta-foo-bar and x-amz-meta-foo_bar
+                env.pop('HTTP_' + key.replace('-', '_').upper(), None)
+                # Need to preserve underscores. Since we know '=' can't be
+                # present, quoted-printable seems appropriate.
+                key = key.replace('_', '=5F').replace('-', '_').upper()
+                key = 'HTTP_X_OBJECT_META_' + key[11:]
+                if key in env:
+                    env[key] += ',' + sanitize(value)
+                else:
+                    env[key] = sanitize(value)
+        else:  # mostly-functional fallback
+            for key in self.environ:
+                if not key.startswith('HTTP_X_AMZ_META_'):
+                    continue
+                # AWS ignores user-defined headers with these characters
+                if any(c in key for c in ' "),/;<=>?@[\\]{}'):
+                    # NB: apparently, '(' *is* allowed
+                    continue
+                env['HTTP_X_OBJECT_META_' + key[16:]] = sanitize(env[key])
                 del env[key]
 
         if 'HTTP_X_AMZ_COPY_SOURCE' in env:
@@ -965,7 +1092,7 @@ class Request(swob.Request):
                     HTTP_PRECONDITION_FAILED: PreconditionFailed,
                 },
                 'DELETE': {
-                    HTTP_NOT_FOUND: (NoSuchKey, obj),
+                    HTTP_NOT_FOUND: (NoSuchBucket, container),
                 },
             }
 
@@ -1106,7 +1233,10 @@ class Request(swob.Request):
         if not CONF.allow_multipart_uploads:
             return None
         query = {'multipart-manifest': 'delete'}
-        resp = self.get_response(app, 'HEAD')
+        try:
+            resp = self.get_response(app, 'HEAD')
+        except NoSuchKey:
+            return None
         return query if resp.is_slo else None
 
 
@@ -1190,7 +1320,7 @@ class S3AclRequest(Request):
             self, container, obj, headers)
         resp = acl_handler.handle_acl(app, method)
 
-        # possible to skip recalling get_resposne_acl if resp is not
+        # possible to skip recalling get_response_acl if resp is not
         # None (e.g. HEAD)
         if resp:
             return resp

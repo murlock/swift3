@@ -26,10 +26,26 @@ from six.moves import urllib
 
 from swift3 import s3_token_middleware as s3_token
 from swift.common.swob import Request, Response
+from swift.common.wsgi import ConfigFileError
 
-
-GOOD_RESPONSE = {'access': {'token': {'id': 'TOKEN_ID',
-                                      'tenant': {'id': 'TENANT_ID'}}}}
+GOOD_RESPONSE = {'access': {
+    'user': {
+        'username': 'S3_USER',
+        'name': 'S3_USER',
+        'id': 'USER_ID',
+        'roles': [
+            {'name': 'swift-user'},
+            {'name': '_member_'},
+        ],
+    },
+    'token': {
+        'id': 'TOKEN_ID',
+        'tenant': {
+            'id': 'TENANT_ID',
+            'name': 'TENANT_NAME'
+        }
+    }
+}}
 
 
 class TestResponse(requests.Response):
@@ -62,8 +78,10 @@ class TestResponse(requests.Response):
 
 
 class FakeApp(object):
+    calls = 0
     """This represents a WSGI app protected by the auth_token middleware."""
     def __call__(self, env, start_response):
+        self.calls += 1
         resp = Response()
         resp.environ = env
         return resp(env, start_response)
@@ -93,9 +111,11 @@ class S3TokenMiddlewareTestBase(unittest.TestCase):
         self.time_patcher = mock.patch.object(time, 'time', lambda: 1234)
         self.time_patcher.start()
 
+        self.app = FakeApp()
         self.conf = {
             'auth_uri': self.TEST_AUTH_URI,
         }
+        self.middleware = s3_token.S3Token(self.app, self.conf)
 
         self.requests_mock = rm_fixture.Fixture()
         self.requests_mock.setUp()
@@ -115,7 +135,6 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
 
     def setUp(self):
         super(S3TokenMiddlewareTestGood, self).setUp()
-        self.middleware = s3_token.S3Token(FakeApp(), self.conf)
 
         self.requests_mock.post(self.TEST_URL,
                                 status_code=201,
@@ -148,6 +167,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
         req.get_response(self.middleware)
         self.assertTrue(req.path.startswith('/v1/AUTH_TENANT_ID'))
         self.assertEqual(req.headers['X-Auth-Token'], 'TOKEN_ID')
+        self.assertEqual(1, self.middleware._app.calls)
 
     def test_authorized_http(self):
         protocol = 'http'
@@ -160,7 +180,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
         self.middleware = (
             s3_token.filter_factory({'auth_protocol': 'http',
                                      'auth_host': host,
-                                     'auth_port': port})(FakeApp()))
+                                     'auth_port': port})(self.app))
         req = Request.blank('/v1/AUTH_cfa/c/o')
         req.headers['Authorization'] = 'AWS access:signature'
         req.headers['X-Storage-Token'] = 'token'
@@ -170,7 +190,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
 
     def test_authorized_trailing_slash(self):
         self.middleware = s3_token.filter_factory({
-            'auth_uri': self.TEST_AUTH_URI + '/'})(FakeApp())
+            'auth_uri': self.TEST_AUTH_URI + '/'})(self.app)
         req = Request.blank('/v1/AUTH_cfa/c/o')
         req.headers['Authorization'] = 'AWS access:signature'
         req.headers['X-Storage-Token'] = 'token'
@@ -188,8 +208,8 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
 
     @mock.patch.object(requests, 'post')
     def test_insecure(self, MOCK_REQUEST):
-        self.middleware = (
-            s3_token.filter_factory({'insecure': 'True'})(FakeApp()))
+        self.middleware = s3_token.filter_factory(
+            {'insecure': 'True', 'auth_uri': 'http://example.com'})(self.app)
 
         text_return_value = json.dumps(GOOD_RESPONSE)
         MOCK_REQUEST.return_value = TestResponse({
@@ -211,21 +231,138 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
         # Some non-secure values.
         true_values = ['true', 'True', '1', 'yes']
         for val in true_values:
-            config = {'insecure': val, 'certfile': 'false_ind'}
-            middleware = s3_token.filter_factory(config)(FakeApp())
+            config = {'insecure': val,
+                      'certfile': 'false_ind',
+                      'auth_uri': 'http://example.com'}
+            middleware = s3_token.filter_factory(config)(self.app)
             self.assertIs(False, middleware._verify)
 
         # Some "secure" values, including unexpected value.
         false_values = ['false', 'False', '0', 'no', 'someweirdvalue']
         for val in false_values:
-            config = {'insecure': val, 'certfile': 'false_ind'}
-            middleware = s3_token.filter_factory(config)(FakeApp())
+            config = {'insecure': val,
+                      'certfile': 'false_ind',
+                      'auth_uri': 'http://example.com'}
+            middleware = s3_token.filter_factory(config)(self.app)
             self.assertEqual('false_ind', middleware._verify)
 
         # Default is secure.
-        config = {'certfile': 'false_ind'}
-        middleware = s3_token.filter_factory(config)(FakeApp())
+        config = {'certfile': 'false_ind',
+                  'auth_uri': 'http://example.com'}
+        middleware = s3_token.filter_factory(config)(self.app)
         self.assertIs('false_ind', middleware._verify)
+
+    def test_ipv6_auth_host_option(self):
+        config = {}
+        ipv6_addr = '::FFFF:129.144.52.38'
+        identity_uri = 'https://[::FFFF:129.144.52.38]:35357'
+
+        # Raw IPv6 address should work
+        config['auth_host'] = ipv6_addr
+        middleware = s3_token.filter_factory(config)(self.app)
+        self.assertEqual(identity_uri, middleware._request_uri)
+
+        # ...as should workarounds already in use
+        config['auth_host'] = '[%s]' % ipv6_addr
+        middleware = s3_token.filter_factory(config)(self.app)
+        self.assertEqual(identity_uri, middleware._request_uri)
+
+        # ... with no config, we should get config error
+        del config['auth_host']
+        with self.assertRaises(ConfigFileError) as cm:
+            s3_token.filter_factory(config)(self.app)
+        self.assertEqual('Either auth_uri or auth_host required',
+                         cm.exception.message)
+
+    @mock.patch.object(requests, 'post')
+    def test_http_timeout(self, MOCK_REQUEST):
+        self.middleware = s3_token.filter_factory({
+            'http_timeout': '2',
+            'auth_uri': 'http://example.com',
+        })(FakeApp())
+
+        MOCK_REQUEST.return_value = TestResponse({
+            'status_code': 201,
+            'text': json.dumps(GOOD_RESPONSE)})
+
+        req = Request.blank('/v1/AUTH_cfa/c/o')
+        req.headers['Authorization'] = 'AWS access:signature'
+        req.headers['X-Storage-Token'] = 'token'
+        req.get_response(self.middleware)
+
+        self.assertTrue(MOCK_REQUEST.called)
+        mock_args, mock_kwargs = MOCK_REQUEST.call_args
+        self.assertEqual(mock_kwargs['timeout'], 2)
+
+    def test_http_timeout_option(self):
+        good_values = ['1', '5.3', '10', '.001']
+        for val in good_values:
+            middleware = s3_token.filter_factory({
+                'http_timeout': val,
+                'auth_uri': 'http://example.com',
+            })(FakeApp())
+            self.assertEqual(float(val), middleware._timeout)
+
+        bad_values = ['1, 4', '-3', '100', 'foo', '0']
+        for val in bad_values:
+            with self.assertRaises(ValueError) as ctx:
+                s3_token.filter_factory({
+                    'http_timeout': val,
+                    'auth_uri': 'http://example.com',
+                })(FakeApp())
+            self.assertTrue(ctx.exception.args[0].startswith((
+                'invalid literal for float():',
+                'could not convert string to float:',
+                'http_timeout must be between 0 and 60 seconds',
+            )), 'Unexpected error message: %s' % ctx.exception)
+
+        # default is 10 seconds
+        middleware = s3_token.filter_factory({
+            'auth_uri': 'http://example.com'})(FakeApp())
+        self.assertEqual(10, middleware._timeout)
+
+    def test_bad_auth_uris(self):
+        for auth_uri in [
+                '/not/a/uri',
+                'http://',
+                '//example.com/path']:
+            with self.assertRaises(ConfigFileError) as cm:
+                s3_token.filter_factory({'auth_uri': auth_uri})(self.app)
+            self.assertEqual('Invalid auth_uri; must include scheme and host',
+                             cm.exception.message)
+        with self.assertRaises(ConfigFileError) as cm:
+            s3_token.filter_factory({
+                'auth_uri': 'nonhttp://example.com'})(self.app)
+        self.assertEqual('Invalid auth_uri; scheme must be http or https',
+                         cm.exception.message)
+        for auth_uri in [
+                'http://user@example.com/',
+                'http://example.com/?with=query',
+                'http://example.com/#with-fragment']:
+            with self.assertRaises(ConfigFileError) as cm:
+                s3_token.filter_factory({'auth_uri': auth_uri})(self.app)
+            self.assertEqual('Invalid auth_uri; must not include username, '
+                             'query, or fragment', cm.exception.message)
+
+    def test_bad_auth_parts(self):
+        with self.assertRaises(ConfigFileError) as cm:
+            s3_token.filter_factory({
+                'auth_host': 'example.com', 'auth_protocol': ''})(self.app)
+        self.assertEqual('Invalid auth_uri; must include scheme and host',
+                         cm.exception.message)
+        with self.assertRaises(ConfigFileError) as cm:
+            s3_token.filter_factory({
+                'auth_host': 'example.com', 'auth_protocol': 'ftp'})(self.app)
+        self.assertEqual('Invalid auth_uri; scheme must be http or https',
+                         cm.exception.message)
+        for conf in [
+                {'auth_host': 'example.com/?with=query'},
+                {'auth_host': 'user:password@example.com'},
+                {'auth_host': 'example.com/#with-fragment'}]:
+            with self.assertRaises(ConfigFileError) as cm:
+                s3_token.filter_factory(conf)(self.app)
+            self.assertEqual('Invalid auth_uri; must not include username, '
+                             'query, or fragment', cm.exception.message)
 
     def test_unicode_path(self):
         url = u'/v1/AUTH_cfa/c/euro\u20ac'.encode('utf8')
@@ -236,10 +373,6 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
 
 
 class S3TokenMiddlewareTestBad(S3TokenMiddlewareTestBase):
-    def setUp(self):
-        super(S3TokenMiddlewareTestBad, self).setUp()
-        self.middleware = s3_token.S3Token(FakeApp(), self.conf)
-
     def test_unauthorized_token(self):
         ret = {"error":
                {"message": "EC2 access key not found.",
@@ -255,6 +388,7 @@ class S3TokenMiddlewareTestBad(S3TokenMiddlewareTestBase):
         self.assertEqual(
             resp.status_int,  # pylint: disable-msg=E1101
             s3_denied_req.status_int)  # pylint: disable-msg=E1101
+        self.assertEqual(0, self.middleware._app.calls)
 
     def test_bogus_authorization(self):
         req = Request.blank('/v1/AUTH_cfa/c/o')
@@ -267,6 +401,7 @@ class S3TokenMiddlewareTestBad(S3TokenMiddlewareTestBase):
         self.assertEqual(
             resp.status_int,  # pylint: disable-msg=E1101
             s3_invalid_req.status_int)  # pylint: disable-msg=E1101
+        self.assertEqual(0, self.middleware._app.calls)
 
     def test_fail_to_connect_to_keystone(self):
         with mock.patch.object(self.middleware, '_json_request') as o:
@@ -281,6 +416,7 @@ class S3TokenMiddlewareTestBad(S3TokenMiddlewareTestBase):
             self.assertEqual(
                 resp.status_int,  # pylint: disable-msg=E1101
                 s3_invalid_req.status_int)  # pylint: disable-msg=E1101
+            self.assertEqual(0, self.middleware._app.calls)
 
     def test_bad_reply(self):
         self.requests_mock.post(self.TEST_URL,
@@ -296,3 +432,68 @@ class S3TokenMiddlewareTestBad(S3TokenMiddlewareTestBase):
         self.assertEqual(
             resp.status_int,  # pylint: disable-msg=E1101
             s3_invalid_req.status_int)  # pylint: disable-msg=E1101
+        self.assertEqual(0, self.middleware._app.calls)
+
+
+class S3TokenMiddlewareTestDeferredAuth(S3TokenMiddlewareTestBase):
+    def setUp(self):
+        super(S3TokenMiddlewareTestDeferredAuth, self).setUp()
+        self.conf['delay_auth_decision'] = 'yes'
+        self.middleware = s3_token.S3Token(FakeApp(), self.conf)
+
+    def test_unauthorized_token(self):
+        ret = {"error":
+               {"message": "EC2 access key not found.",
+                "code": 401,
+                "title": "Unauthorized"}}
+        self.requests_mock.post(self.TEST_URL, status_code=403, json=ret)
+        req = Request.blank('/v1/AUTH_cfa/c/o')
+        req.headers['Authorization'] = 'AWS access:signature'
+        req.headers['X-Storage-Token'] = 'token'
+        resp = req.get_response(self.middleware)
+        self.assertEqual(
+            resp.status_int,  # pylint: disable-msg=E1101
+            200)
+        self.assertNotIn('X-Auth-Token', req.headers)
+        self.assertEqual(1, self.middleware._app.calls)
+
+    def test_bogus_authorization(self):
+        req = Request.blank('/v1/AUTH_cfa/c/o')
+        req.headers['Authorization'] = 'AWS badboy'
+        req.headers['X-Storage-Token'] = 'token'
+        resp = req.get_response(self.middleware)
+        self.assertEqual(
+            resp.status_int,  # pylint: disable-msg=E1101
+            200)
+        self.assertNotIn('X-Auth-Token', req.headers)
+        self.assertEqual(1, self.middleware._app.calls)
+
+    def test_fail_to_connect_to_keystone(self):
+        with mock.patch.object(self.middleware, '_json_request') as o:
+            s3_invalid_req = self.middleware._deny_request('InvalidURI')
+            o.side_effect = s3_token.ServiceError(s3_invalid_req)
+
+            req = Request.blank('/v1/AUTH_cfa/c/o')
+            req.headers['Authorization'] = 'AWS access:signature'
+            req.headers['X-Storage-Token'] = 'token'
+            resp = req.get_response(self.middleware)
+            self.assertEqual(
+                resp.status_int,  # pylint: disable-msg=E1101
+                200)
+        self.assertNotIn('X-Auth-Token', req.headers)
+        self.assertEqual(1, self.middleware._app.calls)
+
+    def test_bad_reply(self):
+        self.requests_mock.post(self.TEST_URL,
+                                status_code=201,
+                                text="<badreply>")
+
+        req = Request.blank('/v1/AUTH_cfa/c/o')
+        req.headers['Authorization'] = 'AWS access:signature'
+        req.headers['X-Storage-Token'] = 'token'
+        resp = req.get_response(self.middleware)
+        self.assertEqual(
+            resp.status_int,  # pylint: disable-msg=E1101
+            200)
+        self.assertNotIn('X-Auth-Token', req.headers)
+        self.assertEqual(1, self.middleware._app.calls)

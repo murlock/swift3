@@ -85,7 +85,7 @@ def get_acl_handler(controller_name):
         # pylint: disable-msg=E1101
         for handler in base_klass.__subclasses__():
             handler_suffix_len = len('AclHandler') \
-                if not handler.__name__ == 'S3AclHandler' else len('Hanlder')
+                if not handler.__name__ == 'S3AclHandler' else len('Handler')
             if handler.__name__[:-handler_suffix_len] == controller_name:
                 return handler
     return BaseAclHandler
@@ -116,7 +116,7 @@ class BaseAclHandler(object):
         """
         General acl handling method.
         This method expects to call Request._get_response() in outside of
-        this method so that this method returns resonse only when sw_method
+        this method so that this method returns response only when sw_method
         is HEAD.
         """
 
@@ -278,7 +278,7 @@ class MultiUploadAclHandler(BaseAclHandler):
     """
     MultiUpload stuff requires acl checking just once for BASE container
     so that MultiUploadAclHandler extends BaseAclHandler to check acl only
-    when the verb defined. We should define tThe verb as the first step to
+    when the verb defined. We should define the verb as the first step to
     request to backend Swift at incoming request.
 
     Basic Rules:

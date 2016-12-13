@@ -13,18 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
-import uuid
 import base64
+import calendar
+import email.utils
+import re
+import socket
 import time
+from urllib import unquote
+import uuid
 
 from swift.common.utils import get_logger
-import email.utils
 
 # Need for check_path_header
 from swift.common import utils
 from swift.common.swob import HTTPPreconditionFailed
-from urllib import unquote
 
 from swift3.cfg import CONF
 
@@ -101,6 +103,21 @@ def check_path_header(req, name, length, error_msg):
             body=error_msg)
 
 
+def is_valid_ipv6(ip):
+    # FIXME: replace with swift.common.ring.utils is_valid_ipv6
+    #        when swift3 requires swift 2.3 or later
+    #        --or--
+    #        swift.common.utils is_valid_ipv6 when swift3 requires swift>2.9
+    """
+    Returns True if the provided ip is a valid IPv6-address
+    """
+    try:
+        socket.inet_pton(socket.AF_INET6, ip)
+    except socket.error:  # not a valid IPv6 address
+        return False
+    return True
+
+
 def validate_bucket_name(name):
         """
         Validates the name of the bucket against S3 criteria,
@@ -161,23 +178,26 @@ def mktime(timestamp_str, time_format='%Y-%m-%dT%H:%M:%S'):
     mktime creates a float instance in epoch time really like as time.mktime
 
     the difference from time.mktime is allowing to 2 formats string for the
-    argumtent for the S3 testing usage.
+    argument for the S3 testing usage.
     TODO: support
 
     :param timestamp_str: a string of timestamp formatted as
                           (a) RFC2822 (e.g. date header)
                           (b) %Y-%m-%dT%H:%M:%S (e.g. copy result)
-    :param time_format: a string of format to parase in (b) process
+    :param time_format: a string of format to parse in (b) process
     :return : a float instance in epoch time
     """
-    try:
-        epoch_time = email.utils.mktime_tz(
-            email.utils.parsedate_tz(timestamp_str))
-    except TypeError:
+    # time_tuple is the *remote* local time
+    time_tuple = email.utils.parsedate_tz(timestamp_str)
+    if time_tuple is None:
         time_tuple = time.strptime(timestamp_str, time_format)
-
         # add timezone info as utc (no time difference)
         time_tuple += (0, )
-        epoch_time = email.utils.mktime_tz(time_tuple)
+
+    # We prefer calendar.gmtime and a manual adjustment over
+    # email.utils.mktime_tz because older versions of Python (<2.7.4) may
+    # double-adjust for timezone in some situations (such when swift changes
+    # os.environ['TZ'] without calling time.tzset()).
+    epoch_time = calendar.timegm(time_tuple) - time_tuple[9]
 
     return epoch_time

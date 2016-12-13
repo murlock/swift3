@@ -100,7 +100,10 @@ class Response(ResponseBase, swob.Response):
             _key = key.lower()
 
             if _key.startswith('x-object-meta-'):
-                headers['x-amz-meta-' + _key[14:]] = val
+                # Note that AWS ignores user-defined headers with '=' in the
+                # header name. We translated underscores to '=5F' on the way
+                # in, though.
+                headers['x-amz-meta-' + _key[14:].replace('=5f', '_')] = val
             elif _key in ('content-length', 'content-type',
                           'content-range', 'content-encoding',
                           'content-disposition', 'content-language',
@@ -230,6 +233,10 @@ class AuthorizationHeaderMalformed(ErrorResponse):
            'and Signature.'
 
 
+class AuthorizationQueryParametersError(ErrorResponse):
+    _status = '400 Bad Request'
+
+
 class BadDigest(ErrorResponse):
     _status = '400 Bad Request'
     _msg = 'The Content-MD5 you specified did not match what we received.'
@@ -256,7 +263,7 @@ class BucketAlreadyOwnedByYou(ErrorResponse):
 
 class BucketNotEmpty(ErrorResponse):
     _status = '409 Conflict'
-    _msg = 'The bucket you tried to delete is not empty.'
+    _msg = 'The bucket you tried to delete is not empty'
 
 
 class CredentialsNotSupported(ErrorResponse):

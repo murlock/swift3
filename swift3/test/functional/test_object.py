@@ -100,7 +100,7 @@ class TestSwift3Object(Swift3FunctionalTestCase):
         self.assertEqual(status, 200)
         elem = fromstring(body, 'ListBucketResult')
 
-        # FIXME: COPY result drops mili/microseconds but GET doesn't
+        # FIXME: COPY result drops milli/microseconds but GET doesn't
         self.assertEqual(
             elem.find('Contents').find("LastModified").text.rsplit('.', 1)[0],
             last_modified_xml.rsplit('.', 1)[0])
@@ -126,6 +126,12 @@ class TestSwift3Object(Swift3FunctionalTestCase):
         self.assertEqual(headers['content-length'], str(len(content)))
 
         # DELETE Object
+        status, headers, body = \
+            self.conn.make_request('DELETE', self.bucket, obj)
+        self.assertEqual(status, 204)
+        self.assertCommonResponseHeaders(headers)
+
+        # DELETE Non-existent Object
         status, headers, body = \
             self.conn.make_request('DELETE', self.bucket, obj)
         self.assertEqual(status, 204)
@@ -207,19 +213,19 @@ class TestSwift3Object(Swift3FunctionalTestCase):
         status, headers, body = \
             auth_error_conn.make_request('HEAD', self.bucket, obj)
         self.assertEqual(status, 403)
-        self.assertEqual(body, '')  # sanifty
+        self.assertEqual(body, '')  # sanity
         self.assertEqual(headers['content-type'], 'application/xml')
 
         status, headers, body = \
             self.conn.make_request('HEAD', self.bucket, 'invalid')
         self.assertEqual(status, 404)
-        self.assertEqual(body, '')  # sanifty
+        self.assertEqual(body, '')  # sanity
         self.assertEqual(headers['content-type'], 'application/xml')
 
         status, headers, body = \
             self.conn.make_request('HEAD', 'invalid', obj)
         self.assertEqual(status, 404)
-        self.assertEqual(body, '')  # sanifty
+        self.assertEqual(body, '')  # sanity
         self.assertEqual(headers['content-type'], 'application/xml')
 
     def test_delete_object_error(self):
@@ -230,11 +236,6 @@ class TestSwift3Object(Swift3FunctionalTestCase):
         status, headers, body = \
             auth_error_conn.make_request('DELETE', self.bucket, obj)
         self.assertEqual(get_error_code(body), 'SignatureDoesNotMatch')
-        self.assertEqual(headers['content-type'], 'application/xml')
-
-        status, headers, body = \
-            self.conn.make_request('DELETE', self.bucket, 'invalid')
-        self.assertEqual(get_error_code(body), 'NoSuchKey')
         self.assertEqual(headers['content-type'], 'application/xml')
 
         status, headers, body = \
@@ -320,7 +321,9 @@ class TestSwift3Object(Swift3FunctionalTestCase):
         self.assertCommonResponseHeaders(headers)
         self._assertObjectEtag(self.bucket, obj, etag)
 
-    def _test_put_object_headers(self, req_headers):
+    def _test_put_object_headers(self, req_headers, expected_headers=None):
+        if expected_headers is None:
+            expected_headers = req_headers
         obj = 'object'
         content = 'abcdefghij'
         etag = md5(content).hexdigest()
@@ -330,7 +333,7 @@ class TestSwift3Object(Swift3FunctionalTestCase):
         self.assertEqual(status, 200)
         status, headers, body = \
             self.conn.make_request('HEAD', self.bucket, obj)
-        for header, value in req_headers.items():
+        for header, value in expected_headers.items():
             self.assertIn(header.lower(), headers)
             self.assertEqual(headers[header.lower()], value)
         self.assertCommonResponseHeaders(headers)
@@ -340,6 +343,21 @@ class TestSwift3Object(Swift3FunctionalTestCase):
         self._test_put_object_headers({
             'X-Amz-Meta-Bar': 'foo',
             'X-Amz-Meta-Bar2': 'foo2'})
+
+    def test_put_object_weird_metadata(self):
+        req_headers = dict(
+            ('x-amz-meta-' + c, c)
+            for c in '!"#$%&\'()*+-./<=>?@[\\]^`{|}~')
+        exp_headers = dict(
+            ('x-amz-meta-' + c, c)
+            for c in '!#$%&\'(*+-.^`|~')
+        self._test_put_object_headers(req_headers, exp_headers)
+
+    def test_put_object_underscore_in_metadata(self):
+        # Break this out separately for ease of testing pre-0.19.0 eventlet
+        self._test_put_object_headers({
+            'X-Amz-Meta-Foo-Bar': 'baz',
+            'X-Amz-Meta-Foo_Bar': 'also baz'})
 
     def test_put_object_content_headers(self):
         self._test_put_object_headers({
@@ -371,6 +389,45 @@ class TestSwift3Object(Swift3FunctionalTestCase):
         self.assertEqual(status, 200)
         self.assertCommonResponseHeaders(headers)
         self._assertObjectEtag(self.bucket, obj, etag)
+
+    def test_put_object_copy_source_params(self):
+        obj = 'object'
+        src_headers = {'X-Amz-Meta-Test': 'src'}
+        src_body = 'some content'
+        dst_bucket = 'dst-bucket'
+        dst_obj = 'dst_object'
+        self.conn.make_request('PUT', self.bucket, obj, src_headers, src_body)
+        self.conn.make_request('PUT', dst_bucket)
+
+        headers = {'X-Amz-Copy-Source': '/%s/%s?nonsense' % (
+            self.bucket, obj)}
+        status, headers, body = \
+            self.conn.make_request('PUT', dst_bucket, dst_obj, headers)
+        self.assertEqual(status, 400)
+        self.assertEqual(get_error_code(body), 'InvalidArgument')
+
+        headers = {'X-Amz-Copy-Source': '/%s/%s?versionId=null&nonsense' % (
+            self.bucket, obj)}
+        status, headers, body = \
+            self.conn.make_request('PUT', dst_bucket, dst_obj, headers)
+        self.assertEqual(status, 400)
+        self.assertEqual(get_error_code(body), 'InvalidArgument')
+
+        headers = {'X-Amz-Copy-Source': '/%s/%s?versionId=null' % (
+            self.bucket, obj)}
+        status, headers, body = \
+            self.conn.make_request('PUT', dst_bucket, dst_obj, headers)
+        self.assertEqual(status, 200)
+        self.assertCommonResponseHeaders(headers)
+        status, headers, body = \
+            self.conn.make_request('GET', dst_bucket, dst_obj)
+        self.assertEqual(headers['x-amz-meta-test'], 'src')
+        self.assertEqual(body, src_body)
+
+        headers = {'X-Amz-Copy-Source': '/%s/%s?' % (self.bucket, obj)}
+        status, headers, body = \
+            self.conn.make_request('PUT', dst_bucket, dst_obj, headers)
+        self.assertEqual(status, 200)
 
     def test_put_object_copy_source(self):
         obj = 'object'
