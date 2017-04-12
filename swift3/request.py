@@ -14,13 +14,15 @@
 # limitations under the License.
 
 import base64
+from collections import defaultdict
 from email.header import Header
 from hashlib import sha1, sha256, md5
 import hmac
 import re
 import six
+# pylint: disable-msg=import-error
+from six.moves.urllib.parse import quote, unquote, parse_qsl
 import string
-from urllib import quote, unquote
 
 from swift.common.utils import split_path
 from swift.common import swob
@@ -49,7 +51,7 @@ from swift3.response import AccessDenied, InvalidArgument, InvalidDigest, \
     BadDigest, AuthorizationHeaderMalformed, AuthorizationQueryParametersError
 from swift3.exception import NotS3Request, BadSwiftRequest
 from swift3.utils import utf8encode, LOGGER, check_path_header, S3Timestamp, \
-    mktime
+    mktime, MULTIUPLOAD_SUFFIX
 from swift3.cfg import CONF
 from swift3.subresource import decode_acl, encode_acl
 from swift3.utils import sysmeta_header, validate_bucket_name
@@ -265,9 +267,18 @@ class SigV4Mixin(object):
 
         :return : dict of headers to sign, the keys are all lower case
         """
-        headers_lower_dict = dict(
-            (k.lower().strip(), ' '.join(_header_strip(v or '').split()))
-            for (k, v) in six.iteritems(self.headers))
+        if 'headers_raw' in self.environ:  # eventlet >= 0.19.0
+            # See https://github.com/eventlet/eventlet/commit/67ec999
+            headers_lower_dict = defaultdict(list)
+            for key, value in self.environ['headers_raw']:
+                headers_lower_dict[key.lower().strip()].append(
+                    ' '.join(_header_strip(value or '').split()))
+            headers_lower_dict = {k: ','.join(v)
+                                  for k, v in headers_lower_dict.items()}
+        else:  # mostly-functional fallback
+            headers_lower_dict = dict(
+                (k.lower().strip(), ' '.join(_header_strip(v or '').split()))
+                for (k, v) in six.iteritems(self.headers))
 
         if 'host' in headers_lower_dict and re.match(
                 'Boto/2.[0-9].[0-2]',
@@ -279,7 +290,7 @@ class SigV4Mixin(object):
                 headers_lower_dict['host'].split(':')[0]
 
         headers_to_sign = [
-            (key, value) for key, value in headers_lower_dict.items()
+            (key, value) for key, value in sorted(headers_lower_dict.items())
             if key in self._signed_headers]
 
         if len(headers_to_sign) != len(self._signed_headers):
@@ -290,7 +301,7 @@ class SigV4Mixin(object):
             # process.
             raise SignatureDoesNotMatch()
 
-        return dict(headers_to_sign)
+        return headers_to_sign
 
     def _canonical_uri(self):
         """
@@ -328,13 +339,12 @@ class SigV4Mixin(object):
         # host:iam.amazonaws.com
         # x-amz-date:20150830T123600Z
         headers_to_sign = self._headers_to_sign()
-        cr.append('\n'.join(
-            ['%s:%s' % (key, value) for key, value in
-             sorted(headers_to_sign.items())]) + '\n')
+        cr.append(''.join('%s:%s\n' % (key, value)
+                          for key, value in headers_to_sign))
 
         # 5. Add signed headers into canonical request like
         # content-type;host;x-amz-date
-        cr.append(';'.join(sorted(headers_to_sign)))
+        cr.append(';'.join(k for k, v in headers_to_sign))
 
         # 6. Add payload string at the tail
         if 'X-Amz-Credential' in self.params:
@@ -362,6 +372,16 @@ class SigV4Mixin(object):
                           self.timestamp.amz_date_format,
                           '/'.join(self.scope),
                           sha256(self._canonical_request()).hexdigest()])
+
+    def signature_does_not_match_kwargs(self):
+        kwargs = super(SigV4Mixin, self).signature_does_not_match_kwargs()
+        cr = self._canonical_request()
+        kwargs.update({
+            'canonical_request': cr,
+            'canonical_request_bytes': ' '.join(
+                format(ord(c), '02x') for c in cr),
+        })
+        return kwargs
 
 
 def get_request_class(env):
@@ -728,13 +748,30 @@ class Request(swob.Request):
 
         :returns: the source HEAD response
         """
-        if 'X-Amz-Copy-Source' not in self.headers:
+        try:
+            src_path = self.headers['X-Amz-Copy-Source']
+        except KeyError:
             return None
 
-        src_path = unquote(self.headers['X-Amz-Copy-Source'])
-        src_path = src_path if src_path.startswith('/') else \
-            ('/' + src_path)
+        if '?' in src_path:
+            src_path, qs = src_path.split('?', 1)
+            query = parse_qsl(qs, True)
+            if not query:
+                pass  # ignore it
+            elif len(query) > 1 or query[0][0] != 'versionId':
+                raise InvalidArgument('X-Amz-Copy-Source',
+                                      self.headers['X-Amz-Copy-Source'],
+                                      'Unsupported copy source parameter.')
+            elif query[0][1] != 'null':
+                # TODO: once we support versioning, we'll need to translate
+                # src_path to the proper location in the versions container
+                raise S3NotImplemented('Versioning is not yet supported')
+            self.headers['X-Amz-Copy-Source'] = src_path
+
+        src_path = unquote(src_path)
+        src_path = src_path if src_path.startswith('/') else ('/' + src_path)
         src_bucket, src_obj = split_path(src_path, 0, 2, True)
+
         headers = swob.HeaderKeyDict()
         headers.update(self._copy_source_headers())
 
@@ -780,9 +817,20 @@ class Request(swob.Request):
                _header_strip(self.headers.get('Content-MD5')) or '',
                _header_strip(self.headers.get('Content-Type')) or '']
 
-        for amz_header in sorted((key.lower() for key in self.headers
-                                  if key.lower().startswith('x-amz-'))):
-            amz_headers[amz_header] = self.headers[amz_header]
+        if 'headers_raw' in self.environ:  # eventlet >= 0.19.0
+            # See https://github.com/eventlet/eventlet/commit/67ec999
+            amz_headers = defaultdict(list)
+            for key, value in self.environ['headers_raw']:
+                key = key.lower()
+                if not key.startswith('x-amz-'):
+                    continue
+                amz_headers[key.strip()].append(value.strip())
+            amz_headers = dict((key, ','.join(value))
+                               for key, value in amz_headers.items())
+        else:  # mostly-functional fallback
+            amz_headers = dict((key.lower(), value)
+                               for key, value in self.headers.items()
+                               if key.lower().startswith('x-amz-'))
 
         if self._is_header_auth:
             if 'x-amz-date' in amz_headers:
@@ -796,8 +844,8 @@ class Request(swob.Request):
             # but as a sanity check...
             raise AccessDenied()
 
-        for k in sorted(key.lower() for key in amz_headers):
-            buf.append("%s:%s" % (k, amz_headers[k]))
+        for key, value in sorted(amz_headers.items()):
+            buf.append("%s:%s" % (key, value))
 
         path = self._canonical_uri()
         if self.query_string:
@@ -813,6 +861,15 @@ class Request(swob.Request):
         else:
             buf.append(path)
         return '\n'.join(buf)
+
+    def signature_does_not_match_kwargs(self):
+        return {
+            'a_w_s_access_key_id': self.access_key,
+            'string_to_sign': self.string_to_sign,
+            'signature_provided': self.signature,
+            'string_to_sign_bytes': ' '.join(
+                format(ord(c), '02x') for c in self.string_to_sign),
+        }
 
     @property
     def controller_name(self):
@@ -883,21 +940,70 @@ class Request(swob.Request):
 
         env = self.environ.copy()
 
-        for key in self.environ:
-            if key.startswith('HTTP_X_AMZ_META_'):
-                if not(set(env[key]).issubset(string.printable)):
-                    env[key] = Header(env[key], 'UTF-8').encode()
-                    if env[key].startswith('=?utf-8?q?'):
-                        env[key] = '=?UTF-8?Q?' + env[key][10:]
-                    elif env[key].startswith('=?utf-8?b?'):
-                        env[key] = '=?UTF-8?B?' + env[key][10:]
-                env['HTTP_X_OBJECT_META_' + key[16:]] = env[key]
+        def sanitize(value):
+            if set(value).issubset(string.printable):
+                return value
+
+            value = Header(value, 'UTF-8').encode()
+            if value.startswith('=?utf-8?q?'):
+                return '=?UTF-8?Q?' + value[10:]
+            elif value.startswith('=?utf-8?b?'):
+                return '=?UTF-8?B?' + value[10:]
+            else:
+                return value
+
+        if 'headers_raw' in env:  # eventlet >= 0.19.0
+            # See https://github.com/eventlet/eventlet/commit/67ec999
+            for key, value in env['headers_raw']:
+                if not key.lower().startswith('x-amz-meta-'):
+                    continue
+                # AWS ignores user-defined headers with these characters
+                if any(c in key for c in ' "),/;<=>?@[\\]{}'):
+                    # NB: apparently, '(' *is* allowed
+                    continue
+                # Note that this may have already been deleted, e.g. if the
+                # client sent multiple headers with the same name, or both
+                # x-amz-meta-foo-bar and x-amz-meta-foo_bar
+                env.pop('HTTP_' + key.replace('-', '_').upper(), None)
+                # Need to preserve underscores. Since we know '=' can't be
+                # present, quoted-printable seems appropriate.
+                key = key.replace('_', '=5F').replace('-', '_').upper()
+                key = 'HTTP_X_OBJECT_META_' + key[11:]
+                if key in env:
+                    env[key] += ',' + sanitize(value)
+                else:
+                    env[key] = sanitize(value)
+        else:  # mostly-functional fallback
+            for key in self.environ:
+                if not key.startswith('HTTP_X_AMZ_META_'):
+                    continue
+                # AWS ignores user-defined headers with these characters
+                if any(c in key for c in ' "),/;<=>?@[\\]{}'):
+                    # NB: apparently, '(' *is* allowed
+                    continue
+                env['HTTP_X_OBJECT_META_' + key[16:]] = sanitize(env[key])
                 del env[key]
 
         if 'HTTP_X_AMZ_COPY_SOURCE' in env:
             env['HTTP_X_COPY_FROM'] = env['HTTP_X_AMZ_COPY_SOURCE']
             del env['HTTP_X_AMZ_COPY_SOURCE']
             env['CONTENT_LENGTH'] = '0'
+            # Content type cannot be modified on COPY
+            env.pop('CONTENT_TYPE', None)
+            if env.pop('HTTP_X_AMZ_METADATA_DIRECTIVE', None) == 'REPLACE':
+                env['HTTP_X_FRESH_METADATA'] = 'True'
+            else:
+                copy_exclude_headers = ('HTTP_CONTENT_DISPOSITION',
+                                        'HTTP_CONTENT_ENCODING',
+                                        'HTTP_CONTENT_LANGUAGE',
+                                        'HTTP_EXPIRES',
+                                        'HTTP_CACHE_CONTROL',
+                                        'HTTP_X_ROBOTS_TAG')
+                for key in copy_exclude_headers:
+                    env.pop(key, None)
+                for key in list(env.keys()):
+                    if key.startswith('HTTP_X_OBJECT_META_'):
+                        del env[key]
 
         if CONF.force_swift_request_proxy_log:
             env['swift.proxy_access_log_made'] = False
@@ -987,7 +1093,7 @@ class Request(swob.Request):
 
         return code_map[method]
 
-    def _swift_error_codes(self, method, container, obj):
+    def _swift_error_codes(self, method, container, obj, env, app):
         """
         Returns a dict from expected Swift error codes to the corresponding S3
         error responses.
@@ -1020,13 +1126,25 @@ class Request(swob.Request):
             }
         else:
             # Swift object access.
+
+            # 404s differ depending upon whether the bucket exists
+            # Note that base-container-existence checks happen elsewhere for
+            # multi-part uploads, and get_container_info should be pulling
+            # from the env cache
+            def not_found_handler():
+                if container.endswith(MULTIUPLOAD_SUFFIX) or \
+                        is_success(get_container_info(
+                            env, app, swift_source='S3').get('status')):
+                    return NoSuchKey(obj)
+                return NoSuchBucket(container)
+
             code_map = {
                 'HEAD': {
-                    HTTP_NOT_FOUND: (NoSuchKey, obj),
+                    HTTP_NOT_FOUND: not_found_handler,
                     HTTP_PRECONDITION_FAILED: PreconditionFailed,
                 },
                 'GET': {
-                    HTTP_NOT_FOUND: (NoSuchKey, obj),
+                    HTTP_NOT_FOUND: not_found_handler,
                     HTTP_PRECONDITION_FAILED: PreconditionFailed,
                     HTTP_REQUESTED_RANGE_NOT_SATISFIABLE: InvalidRange,
                 },
@@ -1038,11 +1156,11 @@ class Request(swob.Request):
                     HTTP_REQUEST_TIMEOUT: RequestTimeout,
                 },
                 'POST': {
-                    HTTP_NOT_FOUND: (NoSuchKey, obj),
+                    HTTP_NOT_FOUND: not_found_handler,
                     HTTP_PRECONDITION_FAILED: PreconditionFailed,
                 },
                 'DELETE': {
-                    HTTP_NOT_FOUND: (NoSuchKey, obj),
+                    HTTP_NOT_FOUND: (NoSuchBucket, container),
                 },
             }
 
@@ -1087,7 +1205,8 @@ class Request(swob.Request):
                 self.user_id = self.access_key
 
         success_codes = self._swift_success_codes(method, container, obj)
-        error_codes = self._swift_error_codes(method, container, obj)
+        error_codes = self._swift_error_codes(method, container, obj,
+                                              sw_req.environ, app)
 
         if status in success_codes:
             return resp
@@ -1105,7 +1224,8 @@ class Request(swob.Request):
         if status == HTTP_BAD_REQUEST:
             raise BadSwiftRequest(err_msg)
         if status == HTTP_UNAUTHORIZED:
-            raise SignatureDoesNotMatch()
+            raise SignatureDoesNotMatch(
+                **self.signature_does_not_match_kwargs())
         if status == HTTP_FORBIDDEN:
             raise AccessDenied()
 
@@ -1183,7 +1303,10 @@ class Request(swob.Request):
         if not CONF.allow_multipart_uploads:
             return None
         query = {'multipart-manifest': 'delete'}
-        resp = self.get_response(app, 'HEAD')
+        try:
+            resp = self.get_response(app, 'HEAD')
+        except NoSuchKey:
+            return None
         return query if resp.is_slo else None
 
 
@@ -1215,7 +1338,8 @@ class S3AclRequest(Request):
         sw_resp = sw_req.get_response(app)
 
         if not sw_req.remote_user:
-            raise SignatureDoesNotMatch()
+            raise SignatureDoesNotMatch(
+                **self.signature_does_not_match_kwargs())
 
         _, self.account, _ = split_path(sw_resp.environ['PATH_INFO'],
                                         2, 3, True)

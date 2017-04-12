@@ -127,9 +127,9 @@ class TestSwift3MultiUpload(Swift3FunctionalTestCase):
         self.assertEqual(headers['content-length'], str(len(body)))
         elem = fromstring(body, 'ListMultipartUploadsResult')
         self.assertEqual(elem.find('Bucket').text, bucket)
-        self.assertEqual(elem.find('KeyMarker').text, None)
+        self.assertIsNone(elem.find('KeyMarker').text)
         self.assertEqual(elem.find('NextKeyMarker').text, uploads[-1][0])
-        self.assertEqual(elem.find('UploadIdMarker').text, None)
+        self.assertIsNone(elem.find('UploadIdMarker').text)
         self.assertEqual(elem.find('NextUploadIdMarker').text, uploads[-1][1])
         self.assertEqual(elem.find('MaxUploads').text, '1000')
         self.assertTrue(elem.find('EncodingType') is None)
@@ -444,6 +444,10 @@ class TestSwift3MultiUpload(Swift3FunctionalTestCase):
         status, headers, body = \
             self.conn.make_request('DELETE', 'nothing', key, query=query)
         self.assertEqual(get_error_code(body), 'NoSuchBucket')
+
+        status, headers, body = \
+            self.conn.make_request('DELETE', bucket, 'nothing', query=query)
+        self.assertEqual(get_error_code(body), 'NoSuchUpload')
 
         query = 'uploadId=%s' % 'nothing'
         status, headers, body = \
