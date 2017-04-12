@@ -156,6 +156,11 @@ def validate_bucket_name(name):
 
 
 class S3Timestamp(utils.Timestamp):
+    def __init__(self, *args, **kwargs):
+        super(S3Timestamp, self).__init__(*args, **kwargs)
+        if self.timestamp >= 10000000000:
+            raise ValueError
+
     @property
     def s3xmlformat(self):
         return self.isoformat[:-7] + '.000Z'
