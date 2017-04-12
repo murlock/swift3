@@ -390,9 +390,11 @@ class TestRequest(Swift3TestCase):
         headers = {
             'Authorization':
                 'AWS4-HMAC-SHA256 '
-                'Credential=test/20130524/US/s3/aws4_request, '
+                'Credential=test/%s/US/s3/aws4_request, '
                 'SignedHeaders=%s,'
-                'Signature=X' % ';'.join(sorted(['host', included_header])),
+                'Signature=X' % (
+                    self.get_v4_amz_date_header().split('T', 1)[0],
+                    ';'.join(sorted(['host', included_header]))),
             'X-Amz-Content-SHA256': '0123456789'}
 
         headers.update(date_header)
@@ -540,9 +542,9 @@ class TestRequest(Swift3TestCase):
         headers = {
             'Authorization':
                 'AWS4-HMAC-SHA256 '
-                'Credential=test/20130524/US/s3/aws4_request, '
+                'Credential=test/%s/US/s3/aws4_request, '
                 'SignedHeaders=host;x-amz-content-sha256;x-amz-date,'
-                'Signature=X',
+                'Signature=X' % self.get_v4_amz_date_header().split('T', 1)[0],
             'X-Amz-Content-SHA256': '0123456789',
             'Date': self.get_date_header(),
             'X-Amz-Date': x_amz_date}
@@ -560,9 +562,9 @@ class TestRequest(Swift3TestCase):
         headers = {
             'Authorization':
                 'AWS4-HMAC-SHA256 '
-                'Credential=test/20130524/US/s3/aws4_request, '
+                'Credential=test/%s/US/s3/aws4_request, '
                 'SignedHeaders=host;x-amz-content-sha256,'
-                'Signature=X',
+                'Signature=X' % self.get_v4_amz_date_header().split('T', 1)[0],
             'X-Amz-Content-SHA256': '0123456789',
             'Date': self.get_date_header()}
 
@@ -579,9 +581,9 @@ class TestRequest(Swift3TestCase):
         headers = {
             'Authorization':
                 'AWS4-HMAC-SHA256 '
-                'Credential=test/20130524/US/s3/aws4_request, '
+                'Credential=test/%s/US/s3/aws4_request, '
                 'SignedHeaders=host;x-amz-content-sha256;x-amz-date,'
-                'Signature=X',
+                'Signature=X' % self.get_v4_amz_date_header().split('T', 1)[0],
             'X-Amz-Content-SHA256': '0123456789',
             'Date': self.get_date_header()}
 
@@ -643,9 +645,9 @@ class TestRequest(Swift3TestCase):
         headers = {
             'Authorization':
                 'AWS4-HMAC-SHA256 '
-                'Credential=test/20130524/US/s3/aws4_request, '
+                'Credential=test/%s/US/s3/aws4_request, '
                 'SignedHeaders=host;x-amz-content-sha256;x-amz-date,'
-                'Signature=X',
+                'Signature=X' % self.get_v4_amz_date_header().split('T', 1)[0],
             'X-Amz-Content-SHA256': '0123456789',
             'Date': self.get_date_header(),
             'X-Amz-Date': x_amz_date}
