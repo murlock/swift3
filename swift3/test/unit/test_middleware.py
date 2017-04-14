@@ -284,13 +284,14 @@ class TestSwift3Middleware(Swift3TestCase):
             self.assertIn('X-Auth-Token', headers)
 
     def test_signed_urls_v4_missing_x_amz_date(self):
-        req = Request.blank('/bucket/object'
-                            '?X-Amz-Algorithm=AWS4-HMAC-SHA256'
-                            '&X-Amz-Credential=test/20T20Z/US/s3/aws4_request'
-                            '&X-Amz-Expires=1000'
-                            '&X-Amz-SignedHeaders=host'
-                            '&X-Amz-Signature=X',
-                            environ={'REQUEST_METHOD': 'GET'})
+        req = Request.blank(
+            '/bucket/object'
+            '?X-Amz-Algorithm=AWS4-HMAC-SHA256'
+            '&X-Amz-Credential=test:tester/20T20Z/US/s3/aws4_request'
+            '&X-Amz-Expires=1000'
+            '&X-Amz-SignedHeaders=host'
+            '&X-Amz-Signature=X',
+            environ={'REQUEST_METHOD': 'GET'})
         req.content_type = 'text/plain'
         status, headers, body = self.call_swift3(req)
         self.assertEqual(self._get_error_code(body), 'AccessDenied')

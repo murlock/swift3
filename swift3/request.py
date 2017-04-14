@@ -1,4 +1,4 @@
-# Copyright (c) 2014 OpenStack Foundation.
+# Copyright (c) 2014,2017 OpenStack Foundation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -400,14 +400,18 @@ class Request(swob.Request):
         self.bucket_in_host = self._parse_host()
         self.container_name, self.object_name = self._parse_uri()
         self._validate_headers()
-        # Lock in string-to-sign now, before we start messing with query params
-        self.string_to_sign = self._string_to_sign()
-        self.environ['swift3.auth_details'] = {
-            'access_key': self.access_key,
-            'signature': self.signature,
-            'string_to_sign': self.string_to_sign,
-            'check_signature': self.check_signature,
-        }
+        if not self._is_anonymous:
+            # Lock in string-to-sign now, before we start messing
+            # with query params
+            self.string_to_sign = self._string_to_sign()
+            self.environ['swift3.auth_details'] = {
+                'access_key': self.access_key,
+                'signature': self.signature,
+                'string_to_sign': self.string_to_sign,
+                'check_signature': self.check_signature,
+            }
+        else:
+            self.string_to_sign = None
         self.token = None
         self.account = None
         self.user_id = None
@@ -420,8 +424,9 @@ class Request(swob.Request):
         # v2 like header consists of AWS access:signature. Since the commit
         # b626a3ca86e467fc7564eac236b9ee2efd49bdcc, the s3token is in swift3
         # repo so probably we need to change s3token to support v4 format.
-        self.headers['Authorization'] = 'AWS %s:%s' % (
-            self.access_key, self.signature)
+        if self.access_key:
+            self.headers['Authorization'] = 'AWS %s:%s' % (
+                self.access_key, self.signature)
         # Avoids that swift.swob.Response replaces Location header value
         # by full URL when absolute path given. See swift.swob for more detail.
         self.environ['swift.leave_relative_location'] = True
@@ -472,7 +477,15 @@ class Request(swob.Request):
 
     @property
     def _is_query_auth(self):
-        return 'AWSAccessKeyId' in self.params
+        return ('AWSAccessKeyId' in self.params or
+                'X-Amz-Credential' in self.params)
+
+    @property
+    def _is_anonymous(self):
+        return (not self._is_header_auth and
+                'Signature' not in self.params and
+                'Expires' not in self.params and
+                'X-Amz-Credential' not in self.params)
 
     def _parse_host(self):
         storage_domain = CONF.storage_domain
@@ -558,6 +571,10 @@ class Request(swob.Request):
             return self._parse_query_authentication()
         elif self._is_header_auth:
             return self._parse_header_authentication()
+        elif self._parse_host() and self.bucket_db:
+            # Anonymous request, we will have to resolve account name
+            # from bucket name.
+            return None, None
         else:
             # if this request is neither query auth nor header auth
             # swift3 regard this as not s3 request
@@ -588,6 +605,9 @@ class Request(swob.Request):
         :raises: AccessDenied
         :raises: RequestTimeTooSkewed
         """
+        if self._is_anonymous:
+            return
+
         if self._is_query_auth:
             self._validate_expire_param()
             # TODO: make sure the case if timestamp param in query
@@ -871,17 +891,28 @@ class Request(swob.Request):
     def is_authenticated(self):
         return self.account is not None
 
+    @property
+    def bucket_db(self):
+        return self.environ.get('swift3.bucket_db')
+
     def to_swift_req(self, method, container, obj, query=None,
                      body=None, headers=None):
         """
         Create a Swift request based on this request's environment.
         """
-        if self.account is None:
-            account = self.access_key
-        else:
-            account = self.account
-
         env = self.environ.copy()
+
+        if container and self.bucket_db:
+            ct_owner = self.bucket_db.get_owner(container)
+            account = ct_owner if ct_owner else None
+        else:
+            account = None
+
+        if account is None:
+            if self.account is None:
+                account = self.access_key
+            else:
+                account = self.account
 
         for key in self.environ:
             if key.startswith('HTTP_X_AMZ_META_'):
@@ -1077,6 +1108,16 @@ class Request(swob.Request):
         sw_req = self.to_swift_req(method, container, obj, headers=headers,
                                    body=body, query=query)
 
+        if self.bucket_db:
+            if self._is_anonymous and method == 'HEAD':
+                # Allow anonymous HEAD requests to read object ACLs
+                sw_req.environ['swift.authorize_override'] = True
+            elif method == 'PUT' and container and not obj:
+                # We are about to create a container, reserve its name
+                can_create = self.bucket_db.reserve(container, self.account)
+                if not can_create:
+                    raise BucketAlreadyExists(container)
+
         sw_resp = sw_req.get_response(app)
 
         # reuse account and tokens
@@ -1103,7 +1144,18 @@ class Request(swob.Request):
                                               sw_req.environ, app)
 
         if status in success_codes:
+            if self.bucket_db and container and not obj:
+                if method == 'PUT':
+                    # Container creation succeeded, confirm reservation
+                    self.bucket_db.set_owner(container, self.account)
+                elif method == 'DELETE':
+                    # Container deletion succeeded, reset owner
+                    self.bucket_db.release(container)
             return resp
+
+        if self.bucket_db and method == 'PUT':
+            # Container creation failed, remove reservation
+            self.bucket_db.release(container)
 
         err_msg = resp.body
 
@@ -1206,7 +1258,8 @@ class S3AclRequest(Request):
     """
     def __init__(self, env, app, slo_enabled=True):
         super(S3AclRequest, self).__init__(env, slo_enabled)
-        self.authenticate(app)
+        if not self._is_anonymous:
+            self.authenticate(app)
 
     @property
     def controller(self):

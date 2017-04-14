@@ -501,6 +501,8 @@ class TestSwift3Bucket(Swift3TestCase):
                             headers={'Authorization': 'AWS test:tester:hmac',
                                      'Date': self.get_date_header()})
         status, headers, body = self.call_swift3(req)
+        if self.swift3.bucket_db:
+            self.swift3.bucket_db.release('bucket')
         self.assertEqual(status.split()[0], '200')
         self.assertEqual(headers['Location'], '/bucket')
 
@@ -512,6 +514,8 @@ class TestSwift3Bucket(Swift3TestCase):
                                      'Date': self.get_date_header(),
                                      'Transfer-Encoding': 'chunked'})
         status, headers, body = self.call_swift3(req)
+        if self.swift3.bucket_db:
+            self.swift3.bucket_db.release('bucket')
         self.assertEqual(status.split()[0], '200')
         self.assertEqual(headers['Location'], '/bucket')
 
@@ -526,6 +530,8 @@ class TestSwift3Bucket(Swift3TestCase):
                                      'Date': self.get_date_header()},
                             body=xml)
         status, headers, body = self.call_swift3(req)
+        if self.swift3.bucket_db:
+            self.swift3.bucket_db.release('bucket')
         self.assertEqual(status.split()[0], '200')
 
     @s3acl
