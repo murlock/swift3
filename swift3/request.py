@@ -1039,6 +1039,7 @@ class Request(swob.Request):
                     HTTP_NOT_FOUND: (NoSuchBucket, container),
                 },
                 'PUT': {
+                    HTTP_NO_CONTENT: (BucketAlreadyExists, container),
                     HTTP_ACCEPTED: (BucketAlreadyExists, container),
                 },
                 'POST': {
