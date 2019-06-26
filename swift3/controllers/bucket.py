@@ -145,12 +145,19 @@ class BucketController(Controller):
             try:
                 resp = req.get_response(self.app, query=query)
                 versioned_objects = json.loads(resp.body)
+                prefixes = set()
                 for o in versioned_objects:
                     if 'name' in o:
                         # The name looks like this:
                         #  '%03x%s/%s' % (len(name), name, version)
                         o['name'], o['version_id'] = \
                             o['name'][3:].rsplit('/', 1)
+                    else:
+                        prefixes.add(o['subdir'])
+                # suppress duplicated prefixes
+                for o in list(objects):
+                    if 'subdir' in o and o['subdir'] in prefixes:
+                        objects.remove(o)
                 objects.extend(versioned_objects)
             except NoSuchBucket:
                 # the bucket may not be versioned
