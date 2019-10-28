@@ -29,7 +29,8 @@ from swift3.etree import Element, SubElement, tostring, fromstring, \
 from swift3.response import HTTPOk, S3NotImplemented, InvalidArgument, \
     MalformedXML, InvalidLocationConstraint, NoSuchBucket, \
     BucketNotEmpty, InternalError, ServiceUnavailable, NoSuchKey, \
-    CORSForbidden, CORSInvalidAccessControlRequest, CORSOriginMissing
+    CORSForbidden, CORSInvalidAccessControlRequest, CORSOriginMissing, \
+    AccessDenied
 from swift3.cfg import CONF
 from swift3.utils import LOGGER, MULTIUPLOAD_SUFFIX, VERSIONING_SUFFIX, \
     extract_s3_etag
@@ -309,6 +310,9 @@ class BucketController(Controller):
         """
         Handle PUT Bucket request
         """
+        if req.environ.get('OIO_USER_RESTRICTED', 0):
+            raise AccessDenied()
+
         xml = req.xml(MAX_PUT_BUCKET_BODY_SIZE)
         if xml:
             # check location
@@ -338,6 +342,8 @@ class BucketController(Controller):
         """
         Handle DELETE Bucket request
         """
+        if req.environ.get('OIO_USER_RESTRICTED', 0):
+            raise AccessDenied()
         if CONF.allow_multipart_uploads:
             self._delete_segments_bucket(req)
         resp = req.get_response(self.app)

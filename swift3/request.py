@@ -443,6 +443,7 @@ class Request(swob.Request):
         self.account = None
         self.user_id = None
         self.slo_enabled = slo_enabled
+        self.user_restricted = False
 
         # NOTE(andrey-mp): substitute authorization header for next modules
         # in pipeline (s3token). it uses this and X-Auth-Token in specific
@@ -911,10 +912,15 @@ class Request(swob.Request):
                 raise S3NotImplemented("Multi-part feature isn't support")
 
         if 'acl' in self.params:
+            # FIXME: it should not happen at this route is managed by S3AclRequest
+            if self.user_restricted:
+                return UnsupportedController
             return AclController
         if 'delete' in self.params:
             return MultiObjectDeleteController
         if 'lifecycle' in self.params:
+            if self.user_restricted:
+                return UnsupportedController
             return LifecycleController
         if 'location' in self.params:
             return LocationController
@@ -923,14 +929,20 @@ class Request(swob.Request):
         if 'partNumber' in self.params:
             return PartController
         if 'tagging' in self.params:
+            if self.user_restricted:
+                return UnsupportedController
             return TaggingController
         if 'uploadId' in self.params:
             return UploadController
         if 'uploads' in self.params:
             return UploadsController
         if 'versioning' in self.params:
+            if self.user_restricted:
+                return UnsupportedController
             return VersioningController
         if 'cors' in self.params:
+            if self.user_restricted:
+                return UnsupportedController
             return CorsController
 
         unsupported = ('notification', 'policy', 'requestPayment', 'torrent',
@@ -1403,10 +1415,25 @@ class S3AclRequest(Request):
         super(S3AclRequest, self).__init__(env, slo_enabled)
         if not self._is_anonymous:
             self.authenticate(app)
+        self.app = app
 
     @property
     def controller(self):
+        # TODO: add parameter in swift3 ?
+        if self.is_authenticated:
+            from swift.proxy.controllers.base import get_account_info
+            env2 = self.environ.copy()
+            env2['PATH_INFO'] = '/v1/%s' % self.account
+            # There is a delay of 60s
+            # TODO: use sysmeta instead of meta ?
+            meta = get_account_info(env2, self.app)
+            self.user_restricted = int(meta['meta'].get('restricted', 0))
+            self.environ['OIO_USER_RESTRICTED'] = self.user_restricted
+            if self.user_restricted:
+                LOGGER.debug("%s is a restricted user", self.account)
         if 'acl' in self.params and not self.is_service_request:
+            if self.user_restricted:
+                return UnsupportedController
             return S3AclController
         return super(S3AclRequest, self).controller
 
