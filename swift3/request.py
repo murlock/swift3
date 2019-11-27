@@ -21,6 +21,7 @@ import re
 import six
 import string
 from six.moves.urllib.parse import parse_qsl, quote, unquote
+import json
 
 from swift.common.utils import split_path
 from swift.common import swob
@@ -441,6 +442,7 @@ class Request(swob.Request):
         self.token = None
         self.account = None
         self.user_id = None
+        self.profile_id = None
         self.slo_enabled = slo_enabled
 
         # NOTE(andrey-mp): substitute authorization header for next modules
@@ -1230,16 +1232,35 @@ class Request(swob.Request):
         resp = Response.from_swift_resp(sw_resp)
         status = resp.status_int  # pylint: disable-msg=E1101
 
+        # IAM-FIXME:
+        # - this code is duplicated at line  1478 (S3AclRequest.authenticate)
+        # - the user_id is like account_id in AWS
+        # - the profile_id will be used to lookup IAM rules in current tenant
+        # - this code is neved called (should investigate with s3_acl ?)
         if not self.user_id:
             if 'HTTP_X_USER_NAME' in sw_resp.environ:
                 # keystone
-                self.user_id = \
-                    utf8encode("%s:%s" %
-                               (sw_resp.environ['HTTP_X_TENANT_NAME'],
-                                sw_resp.environ['HTTP_X_USER_NAME']))
+                if USE_IAM:
+                    self.user_id = \
+                        utf8encode("%s" %
+                                   (sw_resp.environ['HTTP_X_TENANT_NAME']))
+                    self.profile_id = \
+                        utf8encode("%s:%s" %
+                                   (sw_resp.environ['HTTP_X_TENANT_NAME'],
+                                    sw_resp.environ['HTTP_X_USER_NAME']))
+
+                else:
+                    self.user_id = \
+                        utf8encode("%s:%s" %
+                                   (sw_resp.environ['HTTP_X_TENANT_NAME'],
+                                    sw_resp.environ['HTTP_X_USER_NAME']))
             else:
                 # tempauth
-                self.user_id = self.access_key
+                if USE_IAM:
+                    self.user_id = self.access_key.split(':')[0]
+                    self.profile_id = self.acces_key
+                else:
+                    self.user_id = self.access_key
 
         success_codes = self._swift_success_codes(method, container, obj)
         error_codes = self._swift_error_codes(method, container, obj,
@@ -1402,9 +1423,28 @@ class S3AclRequest(Request):
         super(S3AclRequest, self).__init__(env, slo_enabled)
         if not self._is_anonymous:
             self.authenticate(app)
+        # needed as we want to extract account information in controller
+        self.app = app
+        self.iam_rules = None
 
     @property
     def controller(self):
+        if USE_IAM and self.is_authenticated:
+            from swift.proxy.controllers.base import get_account_info
+
+            # IAM-FIXME: ensure that self.account is the bucket owner
+            # not the user authenticated (as we want to support shared access)
+
+            env2 = self.environ.copy()
+            env2['PATH_INFO'] = '/v1/%s' % self.account
+            # There is a delay of 60s
+            meta = get_account_info(env2, self.app)
+            # IAM-FIXME: we should manage groups AND user rules
+            rules = meta.get('sysmeta', {}).get(self.profile_id, None)
+            if rules:
+                # IAM-FIXME use RuleValidator
+                self.iam_rules = json.loads(rules)
+
         if 'acl' in self.params and not self.is_service_request:
             return S3AclController
         return super(S3AclRequest, self).controller
@@ -1429,15 +1469,32 @@ class S3AclRequest(Request):
                                         2, 3, True)
         self.account = utf8encode(self.account)
 
+        # IAM-FIXME:
+        # - this code is duplicated at line 1235 (Request._get_response)!
+        # - the user_id is like account_id in AWS
+        # - the profile_id will be used to lookup IAM rules in current tenant
         if 'HTTP_X_USER_NAME' in sw_resp.environ:
             # keystone
-            self.user_id = "%s:%s" % (sw_resp.environ['HTTP_X_TENANT_NAME'],
-                                      sw_resp.environ['HTTP_X_USER_NAME'])
+            if USE_IAM:
+                self.user_id = sw_resp.environ['HTTP_X_TENANT_NAME']
+                self.profile_id = \
+                    utf8encode("%s:%s" %
+                               (sw_resp.environ['HTTP_X_TENANT_NAME'],
+                                sw_resp.environ['HTTP_X_USER_NAME']))
+
+            else:
+                self.user_id = ("%s:%s" %
+                                (sw_resp.environ['HTTP_X_TENANT_NAME'],
+                                 sw_resp.environ['HTTP_X_USER_NAME']))
             self.user_id = utf8encode(self.user_id)
             self.token = sw_resp.environ.get('HTTP_X_AUTH_TOKEN')
         else:
             # tempauth
-            self.user_id = self.access_key
+            if USE_IAM:
+                self.user_id = self.access_key.split(':')[0]
+                self.profile_id = self.access_key
+            else:
+                self.user_id = self.access_key
 
         # Need to skip S3 authorization on subsequent requests to prevent
         # overwriting the account in PATH_INFO
