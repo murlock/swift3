@@ -55,7 +55,7 @@ from swift3.response import AccessDenied, InvalidArgument, InvalidDigest, \
 from swift3.exception import NotS3Request
 from swift3.utils import utf8encode, LOGGER, check_path_header, S3Timestamp, \
     mktime, MULTIUPLOAD_SUFFIX, versioned_object_name, VERSIONING_SUFFIX
-from swift3.cfg import CONF
+from swift3.cfg import CONF, USE_IAM
 from swift3.subresource import decode_acl, encode_acl
 from swift3.utils import sysmeta_header, validate_bucket_name
 from swift3.acl_utils import handle_acl_header

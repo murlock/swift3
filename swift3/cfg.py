@@ -15,6 +15,7 @@
 
 from swift.common.utils import config_true_value
 
+USE_IAM = True
 
 class Config(dict):
     def __init__(self, base=None):
