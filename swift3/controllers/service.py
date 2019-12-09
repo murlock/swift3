@@ -31,6 +31,7 @@ class ServiceController(Controller):
         """
         Handle GET Service request
         """
+        req.environ.setdefault('swift.log_info', []).append('list-buckets')
         resp = req.get_response(self.app, query={'format': 'json'})
 
         containers = json.loads(resp.body)

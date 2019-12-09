@@ -52,6 +52,8 @@ class MultiObjectDeleteController(Controller):
         """
         Handles Delete Multiple Objects.
         """
+        req.environ.setdefault('swift.log_info', []).append('delete-objects')
+
         def object_key_iter(elem):
             for obj in elem.iterchildren('Object'):
                 key = obj.find('./Key').text

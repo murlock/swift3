@@ -138,10 +138,11 @@ class PartController(Controller):
         req_timestamp = S3Timestamp.now()
         req.headers['X-Timestamp'] = req_timestamp.internal
         source_resp = req.check_copy_source(self.app)
+        method = 'upload-part'
         if 'X-Amz-Copy-Source' in req.headers and \
                 'X-Amz-Copy-Source-Range' in req.headers:
             rng = req.headers['X-Amz-Copy-Source-Range']
-
+            method = 'upload-part-copy'
             header_valid = True
             try:
                 rng_obj = Range(rng)
@@ -164,6 +165,8 @@ class PartController(Controller):
 
             req.headers['Range'] = rng
             del req.headers['X-Amz-Copy-Source-Range']
+
+        req.environ.setdefault('swift.log_info', []).append(method)
         resp = req.get_response(self.app)
 
         if 'X-Amz-Copy-Source' in req.headers:
@@ -180,6 +183,7 @@ class PartController(Controller):
         """
         Handles Get Part (regular Get but with ?part-number=N).
         """
+        req.environ.setdefault('swift.log_info', []).append('get-object-part')
         return self.GETorHEAD(req)
 
     @public
@@ -189,6 +193,7 @@ class PartController(Controller):
         """
         Handles Head Part (regular HEAD but with ?part-number=N).
         """
+        req.environ.setdefault('swift.log_info', []).append('head-object-part')
         return self.GETorHEAD(req)
 
     def GETorHEAD(self, req):
@@ -254,6 +259,9 @@ class UploadsController(Controller):
         """
         Handles List Multipart Uploads
         """
+
+        req.environ.setdefault('swift.log_info', []).append(
+            'list-multipart-uploads')
 
         def separate_uploads(uploads, prefix, delimiter):
             """
@@ -404,6 +412,8 @@ class UploadsController(Controller):
         Handles Initiate Multipart Upload.
         """
 
+        req.environ.setdefault('swift.log_info', []).append(
+            'create-multipart-upload')
         # Create a unique S3 upload id from UUID to avoid duplicates.
         upload_id = unique_id()
 
@@ -447,6 +457,8 @@ class UploadController(Controller):
         """
         Handles List Parts.
         """
+        req.environ.setdefault('swift.log_info', []).append('list-parts')
+
         def filter_part_num_marker(o):
             try:
                 num = int(os.path.basename(o['name']))
@@ -544,6 +556,8 @@ class UploadController(Controller):
         """
         Handles Abort Multipart Upload.
         """
+        req.environ.setdefault('swift.log_info', []).append(
+            'abort-multipart-upload')
         upload_id = req.params['uploadId']
         _check_upload_info(req, self.app, upload_id)
 
@@ -582,6 +596,8 @@ class UploadController(Controller):
         """
         Handles Complete Multipart Upload.
         """
+        req.environ.setdefault('swift.log_info', []).append(
+            'complete-multipart-upload')
         upload_id = req.params['uploadId']
         resp = _get_upload_info(req, self.app, upload_id)
         headers = {}

@@ -39,6 +39,8 @@ class VersioningController(Controller):
         """
         Handles GET Bucket versioning.
         """
+        req.environ.setdefault('swift.log_info', []).append(
+            'get-bucket-versioning')
         info = req.get_container_info(self.app)
         status = None
         versions_container = info.get('sysmeta', {}).get('versions-location')
@@ -69,6 +71,8 @@ class VersioningController(Controller):
         """
         Handles PUT Bucket versioning.
         """
+        req.environ.setdefault('swift.log_info', []).append(
+            'put-bucket-versioning')
         xml = req.xml(MAX_PUT_VERSIONING_BODY_SIZE)
         try:
             elem = fromstring(xml, 'VersioningConfiguration')
