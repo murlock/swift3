@@ -90,6 +90,8 @@ class BucketController(Controller):
         """
         Handle HEAD Bucket (Get Metadata) request
         """
+        req.environ.setdefault('swift.log_info', []).append('head-bucket')
+
         resp = req.get_response(self.app)
 
         return HTTPOk(headers=resp.headers)
@@ -125,6 +127,8 @@ class BucketController(Controller):
         is_v2 = int(req.params.get('list-type', '1')) == 2
         fetch_owner = False
         if is_v2:
+            req.environ.setdefault('swift.log_info', []).append(
+                'list-objects-v2')
             if 'start-after' in req.params:
                 query.update({'marker': req.params['start-after']})
             # continuation-token overrides start-after
@@ -133,6 +137,8 @@ class BucketController(Controller):
                 query.update({'marker': decoded})
             if 'fetch-owner' in req.params:
                 fetch_owner = config_true_value(req.params['fetch-owner'])
+        else:
+            req.environ.setdefault('swift.log_info', []).append('list-objects')
 
         resp = req.get_response(self.app, query=query)
 
@@ -308,6 +314,7 @@ class BucketController(Controller):
         """
         Handle PUT Bucket request
         """
+        req.environ.setdefault('swift.log_info', []).append('create-bucket')
         xml = req.xml(MAX_PUT_BUCKET_BODY_SIZE)
         if xml:
             # check location
@@ -336,6 +343,7 @@ class BucketController(Controller):
         """
         Handle DELETE Bucket request
         """
+        req.environ.setdefault('swift.log_info', []).append('delete-bucket')
         if CONF.allow_multipart_uploads:
             self._delete_segments_bucket(req)
         resp = req.get_response(self.app)
@@ -350,6 +358,7 @@ class BucketController(Controller):
 
     @public
     def OPTIONS(self, req):
+        req.environ.setdefault('swift.log_info', []).append('options')
         origin = req.headers.get('Origin')
         if not origin:
             raise CORSOriginMissing()

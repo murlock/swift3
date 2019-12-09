@@ -88,6 +88,7 @@ class AclController(Controller):
         """
         Handles GET Bucket acl and GET Object acl.
         """
+        req.environ.setdefault('swift.log_info', []).append("get-acl")
         resp = req.get_response(self.app, method='HEAD')
 
         return get_acl(req.user_id, resp.headers)
@@ -97,6 +98,7 @@ class AclController(Controller):
         """
         Handles PUT Bucket acl and PUT Object acl.
         """
+        req.environ.setdefault('swift.log_info', []).append("put-acl")
         if req.is_object_request:
             # Handle Object ACL
             raise S3NotImplemented()

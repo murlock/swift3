@@ -115,6 +115,7 @@ class ObjectController(Controller):
         """
         Handle HEAD Object request
         """
+        req.environ.setdefault('swift.log_info', []).append('head-object')
         resp = self.GETorHEAD(req)
 
         if 'range' in req.headers:
@@ -128,6 +129,7 @@ class ObjectController(Controller):
         """
         Handle GET Object request
         """
+        req.environ.setdefault('swift.log_info', []).append("get-object")
         return self.GETorHEAD(req)
 
     @public
@@ -135,6 +137,7 @@ class ObjectController(Controller):
         """
         Handle PUT Object and PUT Object (Copy) request
         """
+        method = 'put-object'
         # set X-Timestamp by swift3 to use at copy resp body
         req_timestamp = S3Timestamp.now()
         req.headers['X-Timestamp'] = req_timestamp.internal
@@ -147,6 +150,7 @@ class ObjectController(Controller):
         resp = req.get_response(self.app)
 
         if 'X-Amz-Copy-Source' in req.headers:
+            method = 'copy-object'
             resp.append_copy_resp_body(req.controller_name,
                                        req_timestamp.s3xmlformat)
 
@@ -154,7 +158,7 @@ class ObjectController(Controller):
             for key in list(resp.headers.keys()):
                 if key.startswith('x-amz-meta-'):
                     del resp.headers[key]
-
+        req.environ.setdefault('swift.log_info', []).append(method)
         resp.status = HTTP_OK
         return resp
 
@@ -191,6 +195,7 @@ class ObjectController(Controller):
         """
         Handle DELETE Object request
         """
+        req.environ.setdefault('swift.log_info', []).append('delete-object')
         try:
             query = req.gen_multipart_manifest_delete_query(self.app)
             req.headers['Content-Type'] = None  # Ignore client content-type

@@ -156,6 +156,7 @@ class CorsController(Controller):
         """
         Handles GET Bucket CORS.
         """
+        req.environ.setdefault('swift.log_info', []).append('get-bucket-cors')
         resp = req._get_response(self.app, 'HEAD',
                                  req.container_name, None)
         body = resp.sysmeta_headers.get(BUCKET_CORS_HEADER)
@@ -169,6 +170,7 @@ class CorsController(Controller):
         """
         Handles PUT Bucket CORs.
         """
+        req.environ.setdefault('swift.log_info', []).append('put-bucket-cors')
         xml = req.xml(MAX_CORS_BODY_SIZE)
         try:
             data = fromstring(xml, "CorsConfiguration")
@@ -192,6 +194,8 @@ class CorsController(Controller):
         """
         Handles DELETE Bucket CORs.
         """
+        req.environ.setdefault('swift.log_info', []).append(
+            'delete-bucket-cors')
         req.headers[BUCKET_CORS_HEADER] = ''
         resp = req._get_response(self.app, 'POST',
                                  req.container_name, None)

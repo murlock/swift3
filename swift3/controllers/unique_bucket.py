@@ -29,6 +29,7 @@ class UniqueBucketController(BucketController):
         """
         Handle PUT Bucket request
         """
+        req.environ.setdefault('swift.log_info', []).append('create-bucket')
         # We are about to create a container, reserve its name.
         can_create = req.bucket_db.reserve(req.container_name, req.account)
         if not can_create:
@@ -52,6 +53,7 @@ class UniqueBucketController(BucketController):
         """
         Handle DELETE Bucket request
         """
+        req.environ.setdefault('swift.log_info', []).append('delete-bucket')
         try:
             resp = super(UniqueBucketController, self).DELETE(req)
         except NoSuchBucket:
