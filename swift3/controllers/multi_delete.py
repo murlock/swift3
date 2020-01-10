@@ -22,7 +22,7 @@ from swift3.response import HTTPOk, S3NotImplemented, \
     ErrorResponse, MalformedXML, UserKeyMustBeSpecified, AccessDenied, \
     MissingRequestBodyError
 from swift3.cfg import CONF
-from swift3.utils import LOGGER
+from swift3.utils import LOGGER, log_s3api_command
 
 # 1000 keys with len 1024 and XML overhead
 MAX_MULTI_DELETE_BODY_SIZE = 1536000
@@ -52,7 +52,7 @@ class MultiObjectDeleteController(Controller):
         """
         Handles Delete Multiple Objects.
         """
-        req.environ.setdefault('swift.log_info', []).append('delete-objects')
+        log_s3api_command(req, 'delete-objects')
 
         def object_key_iter(elem):
             for obj in elem.iterchildren('Object'):

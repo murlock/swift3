@@ -19,7 +19,7 @@ from swift3.controllers.base import Controller, bucket_operation
 from swift3.etree import Element, tostring, fromstring, XMLSyntaxError, \
     DocumentInvalid, SubElement
 from swift3.response import HTTPOk, NoSuchBucket, MalformedXML
-from swift3.utils import LOGGER, VERSIONING_SUFFIX
+from swift3.utils import LOGGER, VERSIONING_SUFFIX, log_s3api_command
 
 MAX_PUT_VERSIONING_BODY_SIZE = 10240
 
@@ -39,8 +39,7 @@ class VersioningController(Controller):
         """
         Handles GET Bucket versioning.
         """
-        req.environ.setdefault('swift.log_info', []).append(
-            'get-bucket-versioning')
+        log_s3api_command(req, 'get-bucket-versioning')
         info = req.get_container_info(self.app)
         status = None
         versions_container = info.get('sysmeta', {}).get('versions-location')
@@ -71,8 +70,7 @@ class VersioningController(Controller):
         """
         Handles PUT Bucket versioning.
         """
-        req.environ.setdefault('swift.log_info', []).append(
-            'put-bucket-versioning')
+        log_s3api_command(req, 'put-bucket-versioning')
         xml = req.xml(MAX_PUT_VERSIONING_BODY_SIZE)
         try:
             elem = fromstring(xml, 'VersioningConfiguration')

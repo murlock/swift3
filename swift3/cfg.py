@@ -72,5 +72,6 @@ CONF = Config({
     'force_swift_request_proxy_log': False,
     'allow_multipart_uploads': True,
     'min_segment_size': 5242880,
-    'allow_anymous_path_request': True
+    'allow_anymous_path_request': True,
+    'log_s3api_command': False
 })

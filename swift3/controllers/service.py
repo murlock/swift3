@@ -18,7 +18,7 @@ from swift.common.utils import json, public, last_modified_date_to_timestamp
 from swift3.controllers.base import Controller
 from swift3.etree import Element, SubElement, tostring
 from swift3.response import HTTPOk, AccessDenied, NoSuchBucket
-from swift3.utils import validate_bucket_name, S3Timestamp
+from swift3.utils import validate_bucket_name, S3Timestamp, log_s3api_command
 from swift3.cfg import CONF
 
 
@@ -31,7 +31,7 @@ class ServiceController(Controller):
         """
         Handle GET Service request
         """
-        req.environ.setdefault('swift.log_info', []).append('list-buckets')
+        log_s3api_command(req, 'list-buckets')
         resp = req.get_response(self.app, query={'format': 'json'})
 
         containers = json.loads(resp.body)
