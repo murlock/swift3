@@ -61,7 +61,7 @@ from swift3.response import InvalidArgument, ErrorResponse, MalformedXML, \
     InvalidRequest, HTTPOk, HTTPNoContent, NoSuchKey, NoSuchUpload, \
     NoSuchBucket, InvalidRange, BadDigest
 from swift3.utils import LOGGER, unique_id, MULTIUPLOAD_SUFFIX, S3Timestamp, \
-    extract_s3_etag
+    extract_s3_etag, log_s3api_command
 from swift3.etree import Element, SubElement, fromstring, tostring, \
     XMLSyntaxError, DocumentInvalid
 from swift3.cfg import CONF
@@ -166,7 +166,7 @@ class PartController(Controller):
             req.headers['Range'] = rng
             del req.headers['X-Amz-Copy-Source-Range']
 
-        req.environ.setdefault('swift.log_info', []).append(method)
+        log_s3api_command(req, method)
         resp = req.get_response(self.app)
 
         if 'X-Amz-Copy-Source' in req.headers:
@@ -183,7 +183,7 @@ class PartController(Controller):
         """
         Handles Get Part (regular Get but with ?part-number=N).
         """
-        req.environ.setdefault('swift.log_info', []).append('get-object-part')
+        log_s3api_command(req, 'get-object-part')
         return self.GETorHEAD(req)
 
     @public
@@ -193,7 +193,7 @@ class PartController(Controller):
         """
         Handles Head Part (regular HEAD but with ?part-number=N).
         """
-        req.environ.setdefault('swift.log_info', []).append('head-object-part')
+        log_s3api_command(req, 'head-object-part')
         return self.GETorHEAD(req)
 
     def GETorHEAD(self, req):
@@ -260,8 +260,7 @@ class UploadsController(Controller):
         Handles List Multipart Uploads
         """
 
-        req.environ.setdefault('swift.log_info', []).append(
-            'list-multipart-uploads')
+        log_s3api_command(req, 'list-multipart-uploads')
 
         def separate_uploads(uploads, prefix, delimiter):
             """
@@ -412,8 +411,7 @@ class UploadsController(Controller):
         Handles Initiate Multipart Upload.
         """
 
-        req.environ.setdefault('swift.log_info', []).append(
-            'create-multipart-upload')
+        log_s3api_command(req, 'create-multipart-upload')
         # Create a unique S3 upload id from UUID to avoid duplicates.
         upload_id = unique_id()
 
@@ -457,7 +455,7 @@ class UploadController(Controller):
         """
         Handles List Parts.
         """
-        req.environ.setdefault('swift.log_info', []).append('list-parts')
+        log_s3api_command(req, 'list-parts')
 
         def filter_part_num_marker(o):
             try:
@@ -556,8 +554,7 @@ class UploadController(Controller):
         """
         Handles Abort Multipart Upload.
         """
-        req.environ.setdefault('swift.log_info', []).append(
-            'abort-multipart-upload')
+        log_s3api_command(req, 'abort-multipart-upload')
         upload_id = req.params['uploadId']
         _check_upload_info(req, self.app, upload_id)
 
@@ -596,8 +593,7 @@ class UploadController(Controller):
         """
         Handles Complete Multipart Upload.
         """
-        req.environ.setdefault('swift.log_info', []).append(
-            'complete-multipart-upload')
+        log_s3api_command(req, 'complete-multipart-upload')
         upload_id = req.params['uploadId']
         resp = _get_upload_info(req, self.app, upload_id)
         headers = {}

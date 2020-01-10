@@ -23,6 +23,7 @@ from swift3.response import HTTPOk, S3NotImplemented, MalformedACLError, \
     UnexpectedContent, MissingSecurityHeader
 from swift3.etree import Element, SubElement, tostring
 from swift3.acl_utils import swift_acl_translate, XMLNS_XSI
+from swift3.utils import log_s3api_command
 
 
 MAX_ACL_BODY_SIZE = 200 * 1024
@@ -88,7 +89,7 @@ class AclController(Controller):
         """
         Handles GET Bucket acl and GET Object acl.
         """
-        req.environ.setdefault('swift.log_info', []).append("get-acl")
+        log_s3api_command(req, 'get-acl')
         resp = req.get_response(self.app, method='HEAD')
 
         return get_acl(req.user_id, resp.headers)
@@ -98,7 +99,7 @@ class AclController(Controller):
         """
         Handles PUT Bucket acl and PUT Object acl.
         """
-        req.environ.setdefault('swift.log_info', []).append("put-acl")
+        log_s3api_command(req, 'put-acl')
         if req.is_object_request:
             # Handle Object ACL
             raise S3NotImplemented()

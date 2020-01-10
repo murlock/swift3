@@ -19,7 +19,8 @@ from swift.common.middleware.versioned_writes import \
 from swift.common.swob import Range, content_range_header_value
 from swift.common.utils import public
 
-from swift3.utils import S3Timestamp, VERSIONING_SUFFIX, versioned_object_name
+from swift3.utils import S3Timestamp, VERSIONING_SUFFIX, \
+    versioned_object_name, log_s3api_command
 from swift3.controllers.base import Controller
 from swift3.controllers.cors import get_cors, cors_fill_headers, \
     CORS_ALLOWED_HTTP_METHOD
@@ -115,7 +116,7 @@ class ObjectController(Controller):
         """
         Handle HEAD Object request
         """
-        req.environ.setdefault('swift.log_info', []).append('head-object')
+        log_s3api_command(req, 'head-object')
         resp = self.GETorHEAD(req)
 
         if 'range' in req.headers:
@@ -129,7 +130,7 @@ class ObjectController(Controller):
         """
         Handle GET Object request
         """
-        req.environ.setdefault('swift.log_info', []).append("get-object")
+        log_s3api_command(req, 'get-object')
         return self.GETorHEAD(req)
 
     @public
@@ -158,7 +159,7 @@ class ObjectController(Controller):
             for key in list(resp.headers.keys()):
                 if key.startswith('x-amz-meta-'):
                     del resp.headers[key]
-        req.environ.setdefault('swift.log_info', []).append(method)
+        log_s3api_command(req, method)
         resp.status = HTTP_OK
         return resp
 
@@ -195,7 +196,7 @@ class ObjectController(Controller):
         """
         Handle DELETE Object request
         """
-        req.environ.setdefault('swift.log_info', []).append('delete-object')
+        log_s3api_command(req, 'delete-object')
         try:
             query = req.gen_multipart_manifest_delete_query(self.app)
             req.headers['Content-Type'] = None  # Ignore client content-type

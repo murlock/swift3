@@ -228,3 +228,14 @@ def extract_s3_etag(content_type):
         else:
             content_type += ';%s=%s' % (key, value)
     return content_type, s3_etag
+
+
+def log_s3api_command(req, command):
+    """
+    Append s3api command to current request in swift.log_info fields.
+
+    :param req: HTTP request object
+    :param command: s3 command string
+    """
+    if CONF.log_s3api_command:
+        req.environ.setdefault('swift.log_info', []).append(command)

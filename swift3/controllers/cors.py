@@ -22,7 +22,7 @@ from swift3.etree import fromstring, DocumentInvalid, XMLSyntaxError
 from swift3.response import HTTPOk, HTTPNoContent, MalformedXML, \
     NoSuchCORSConfiguration, CORSInvalidRequest
 
-from swift3.utils import LOGGER, sysmeta_header
+from swift3.utils import LOGGER, sysmeta_header, log_s3api_command
 
 VERSION_ID_HEADER = 'X-Object-Sysmeta-Version-Id'
 
@@ -156,7 +156,7 @@ class CorsController(Controller):
         """
         Handles GET Bucket CORS.
         """
-        req.environ.setdefault('swift.log_info', []).append('get-bucket-cors')
+        log_s3api_command(req, 'get-bucket-cors')
         resp = req._get_response(self.app, 'HEAD',
                                  req.container_name, None)
         body = resp.sysmeta_headers.get(BUCKET_CORS_HEADER)
@@ -170,7 +170,7 @@ class CorsController(Controller):
         """
         Handles PUT Bucket CORs.
         """
-        req.environ.setdefault('swift.log_info', []).append('put-bucket-cors')
+        log_s3api_command(req, 'put-bucket-cors')
         xml = req.xml(MAX_CORS_BODY_SIZE)
         try:
             data = fromstring(xml, "CorsConfiguration")
@@ -194,8 +194,7 @@ class CorsController(Controller):
         """
         Handles DELETE Bucket CORs.
         """
-        req.environ.setdefault('swift.log_info', []).append(
-            'delete-bucket-cors')
+        log_s3api_command(req, 'delete-bucket-cors')
         req.headers[BUCKET_CORS_HEADER] = ''
         resp = req._get_response(self.app, 'POST',
                                  req.container_name, None)
