@@ -15,6 +15,7 @@
 
 import time
 import importlib
+from six import string_types
 from swift.common.utils import config_true_value
 
 try:
@@ -55,7 +56,7 @@ except ImportError:
             if not sentinel_name:
                 raise ValueError("missing parameter 'sentinel_name'")
 
-            if isinstance(sentinel_hosts, basestring):
+            if isinstance(sentinel_hosts, string_types):
                 sentinel_hosts = sentinel_hosts.split(',')
             self._sentinel_hosts = [(h, int(p)) for h, p, in (hp.rsplit(':', 1)
                                     for hp in sentinel_hosts)]
@@ -166,7 +167,6 @@ class DummyBucketDb(object):
 class RedisBucketDb(RedisConnection):
     """
     Keep a list of buckets with their associated account.
-    Dummy in-memory implementation.
     """
 
     def __init__(self, host=None, sentinel_hosts=None, sentinel_name=None,
