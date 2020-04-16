@@ -58,7 +58,7 @@ from swift3.controllers.base import Controller, bucket_operation, \
     object_operation, check_container_existence
 from swift3.iam import check_iam_access
 from swift3.response import InvalidArgument, ErrorResponse, MalformedXML, \
-    InvalidPart, BucketAlreadyExists, EntityTooSmall, InvalidPartOrder, \
+    InvalidPart, EntityTooSmall, InvalidPartOrder, \
     InvalidRequest, HTTPOk, HTTPNoContent, NoSuchKey, NoSuchUpload, \
     NoSuchBucket, InvalidRange, BadDigest
 from swift3.utils import LOGGER, unique_id, MULTIUPLOAD_SUFFIX, S3Timestamp, \
@@ -74,14 +74,16 @@ MAX_COMPLETE_UPLOAD_BODY_SIZE = 2048 * 1024
 
 
 def _get_upload_info(req, app, upload_id):
-
     container = req.container_name + MULTIUPLOAD_SUFFIX
     obj = '%s/%s' % (req.object_name, upload_id)
-
+    req.environ['oio.ephemeral_object'] = True
     try:
-        return req.get_response(app, 'HEAD', container=container, obj=obj)
+        res = req.get_response(app, 'HEAD', container=container, obj=obj)
+        return res
     except NoSuchKey:
         raise NoSuchUpload(upload_id=upload_id)
+    finally:
+        req.environ['oio.ephemeral_object'] = False
 
 
 def _check_upload_info(req, app, upload_id):
@@ -324,6 +326,7 @@ class UploadsController(Controller):
 
         container = req.container_name + MULTIUPLOAD_SUFFIX
         try:
+            req.environ['oio.list_mpu'] = True
             resp = req.get_response(self.app, container=container, query=query)
             objects = json.loads(resp.body)
         except NoSuchBucket:
@@ -420,15 +423,12 @@ class UploadsController(Controller):
         upload_id = unique_id()
 
         container = req.container_name + MULTIUPLOAD_SUFFIX
-        try:
-            req.get_response(self.app, 'PUT', container, '')
-        except BucketAlreadyExists:
-            pass
 
         obj = '%s/%s' % (req.object_name, upload_id)
 
         req.headers.pop('Etag', None)
         req.headers.pop('Content-Md5', None)
+        req.environ['oio.ephemeral_object'] = True
 
         req.get_response(self.app, 'PUT', container, obj, body='')
 
@@ -564,12 +564,16 @@ class UploadController(Controller):
         upload_id = req.params['uploadId']
         _check_upload_info(req, self.app, upload_id)
 
+        container = req.container_name + MULTIUPLOAD_SUFFIX
         # First check to see if this multi-part upload was already
         # completed.  Look in the primary container, if the object exists,
         # then it was completed and we return an error here.
-        container = req.container_name + MULTIUPLOAD_SUFFIX
         obj = '%s/%s' % (req.object_name, upload_id)
-        req.get_response(self.app, container=container, obj=obj)
+        req.environ['oio.ephemeral_object'] = True
+        try:
+            req.get_response(self.app, container=container, obj=obj)
+        finally:
+            req.environ['oio.ephemeral_object'] = False
 
         # The completed object was not found so this
         # must be a multipart upload abort.
@@ -729,6 +733,7 @@ class UploadController(Controller):
 
         # clean up the multipart-upload record
         obj = '%s/%s' % (req.object_name, upload_id)
+        req.environ['oio.ephemeral_object'] = True
         req.get_response(self.app, 'DELETE', container, obj)
 
         result_elem = Element('CompleteMultipartUploadResult')

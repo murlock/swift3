@@ -73,5 +73,5 @@ CONF = Config({
     'allow_multipart_uploads': True,
     'min_segment_size': 5242880,
     'allow_anymous_path_request': True,
-    'log_s3api_command': False
+    'log_s3api_command': False,
 })

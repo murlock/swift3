@@ -317,6 +317,7 @@ class MultiUploadAclHandler(BaseAclHandler):
         super(MultiUploadAclHandler, self).__init__(req, container, obj,
                                                     headers)
         self.container = self.container[:-len(MULTIUPLOAD_SUFFIX)]
+        self.acl_checked = False
 
     def handle_acl(self, app, method):
         method = method or self.method
@@ -363,17 +364,15 @@ class UploadsAclHandler(MultiUploadAclHandler):
         self._handle_acl(app, 'GET', self.container, '')
 
     def PUT(self, app):
-        if not self.obj:
-            # Initiate Multipart Uploads (put +segment container)
-            resp = self._handle_acl(app, 'HEAD')
+        if not self.acl_checked:
+            resp = self._handle_acl(app, 'HEAD', obj='')
             req_acl = ACL.from_headers(self.req.headers,
                                        resp.bucket_acl.owner,
                                        Owner(self.user_id, self.user_id))
             acl_headers = encode_acl('object', req_acl)
             self.req.headers[sysmeta_header('object', 'tmpacl')] = \
                 acl_headers[sysmeta_header('object', 'acl')]
-
-        # No check needed at Initiate Multipart Uploads (put upload id object)
+            self.acl_checked = True
 
 
 class UploadAclHandler(MultiUploadAclHandler):
@@ -388,7 +387,12 @@ class UploadAclHandler(MultiUploadAclHandler):
     def PUT(self, app):
         container = self.req.container_name + MULTIUPLOAD_SUFFIX
         obj = '%s/%s' % (self.obj, self.req.params['uploadId'])
-        resp = self.req._get_response(app, 'HEAD', container, obj)
+
+        self.req.environ['oio.ephemeral_object'] = True
+        try:
+            resp = self.req._get_response(app, 'HEAD', container, obj)
+        finally:
+            self.req.environ['oio.ephemeral_object'] = False
         self.req.headers[sysmeta_header('object', 'acl')] = \
             resp.sysmeta_headers.get(sysmeta_header('object', 'tmpacl'))
 
