@@ -109,7 +109,7 @@ class ObjectController(Controller):
             if 'response-' + key in req.params:
                 resp.headers[key] = req.params['response-' + key]
 
-        if cors_rule:
+        if cors_rule is not None:
             cors_fill_headers(req, resp, cors_rule)
         return resp
 
