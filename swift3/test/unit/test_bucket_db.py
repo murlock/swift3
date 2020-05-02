@@ -33,11 +33,16 @@ class TestSwift3BucketDb(Swift3TestCase):
         super(TestSwift3BucketDb, self).setUp()
         self.swift.register('PUT', '/v1/AUTH_test2/bucket',
                             swob.HTTPCreated, {}, None)
+        self.swift.register('PUT', '/v1/AUTH_test2/bucket+segments',
+                            swob.HTTPNoContent, {}, None)
         self.swift.register('PUT', '/v1/AUTH_test/bucket-server-error',
                             swob.HTTPServerError, {}, None)
         self.swift.register(
             'HEAD', '/v1/AUTH_test/bucket', swob.HTTPNoContent,
             {'X-Container-Object-Count': 0}, None)
+        self.swift.register(
+            'PUT', '/v1/AUTH_test/bucket+segments', swob.HTTPNoContent,
+            {}, None)
         self.swift.register(
             'GET', '/v1/AUTH_test/bucket+segments?format=json&marker=',
             swob.HTTPNotFound, {}, None)
@@ -103,7 +108,8 @@ class TestSwift3BucketDb(Swift3TestCase):
 
     def test_bucket_DELETE(self):
         self.assertIsNone(self.db.get_owner('bucket'))
-        status, _, _ = self._bucket_put()
+        status, body, _ = self._bucket_put()
+        print(body)
         self.assertEqual(status.split()[0], '200')
         self.assertEqual(self.db.get_owner('bucket'), 'AUTH_test')
 

@@ -924,6 +924,8 @@ class TestSwift3Middleware(Swift3TestCase):
                      'Date': self.get_date_header()})
         self.swift.register('PUT', '/v1/AUTH_TENANT_ID/bucket',
                             swob.HTTPCreated, {}, None)
+        self.swift.register('PUT', '/v1/AUTH_TENANT_ID/bucket+segments',
+                            swob.HTTPCreated, {}, None)
         self.swift.register('HEAD', '/v1/AUTH_TENANT_ID',
                             swob.HTTPOk, {}, None)
         with patch.object(self.s3_token, '_json_request') as mock_req:
@@ -934,7 +936,7 @@ class TestSwift3Middleware(Swift3TestCase):
 
             status, headers, body = self.call_swift3(req)
             self.assertEqual(body, '')
-            self.assertEqual(1, mock_req.call_count)
+            self.assertEqual(2, mock_req.call_count)
 
     def test_swift3_with_only_s3_token_v3(self):
         self.swift = FakeSwift()
@@ -950,6 +952,8 @@ class TestSwift3Middleware(Swift3TestCase):
                      'Date': self.get_date_header()})
         self.swift.register('PUT', '/v1/AUTH_PROJECT_ID/bucket',
                             swob.HTTPCreated, {}, None)
+        self.swift.register('PUT', '/v1/AUTH_PROJECT_ID/bucket+segments',
+                            swob.HTTPCreated, {}, None)
         self.swift.register('HEAD', '/v1/AUTH_PROJECT_ID',
                             swob.HTTPOk, {}, None)
         with patch.object(self.s3_token, '_json_request') as mock_req:
@@ -960,7 +964,7 @@ class TestSwift3Middleware(Swift3TestCase):
 
             status, headers, body = self.call_swift3(req)
             self.assertEqual(body, '')
-            self.assertEqual(1, mock_req.call_count)
+            self.assertEqual(2, mock_req.call_count)
 
     def test_swift3_with_s3_token_and_auth_token(self):
         self.swift = FakeSwift()
@@ -977,6 +981,8 @@ class TestSwift3Middleware(Swift3TestCase):
             headers={'Authorization': 'AWS access:signature',
                      'Date': self.get_date_header()})
         self.swift.register('PUT', '/v1/AUTH_TENANT_ID/bucket',
+                            swob.HTTPCreated, {}, None)
+        self.swift.register('PUT', '/v1/AUTH_TENANT_ID/bucket+segments',
                             swob.HTTPCreated, {}, None)
         self.swift.register('HEAD', '/v1/AUTH_TENANT_ID',
                             swob.HTTPOk, {}, None)
@@ -995,10 +1001,10 @@ class TestSwift3Middleware(Swift3TestCase):
 
                 status, headers, body = self.call_swift3(req)
                 self.assertEqual(body, '')
-                self.assertEqual(1, mock_req.call_count)
+                self.assertEqual(2, mock_req.call_count)
                 # With X-Auth-Token, auth_token will call _do_fetch_token to
                 # connect to keystone in auth_token, again
-                self.assertEqual(1, mock_fetch.call_count)
+                self.assertEqual(2, mock_fetch.call_count)
 
     def test_swift3_with_s3_token_no_pass_token_to_auth_token(self):
         self.swift = FakeSwift()
@@ -1015,6 +1021,8 @@ class TestSwift3Middleware(Swift3TestCase):
             headers={'Authorization': 'AWS access:signature',
                      'Date': self.get_date_header()})
         self.swift.register('PUT', '/v1/AUTH_TENANT_ID/bucket',
+                            swob.HTTPCreated, {}, None)
+        self.swift.register('PUT', '/v1/AUTH_TENANT_ID/bucket+segments',
                             swob.HTTPCreated, {}, None)
         self.swift.register('HEAD', '/v1/AUTH_TENANT_ID',
                             swob.HTTPOk, {}, None)
