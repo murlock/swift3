@@ -29,7 +29,8 @@ from swift3.iam import check_iam_access
 from swift3.response import HTTPOk, S3NotImplemented, InvalidArgument, \
     MalformedXML, InvalidLocationConstraint, NoSuchBucket, \
     BucketNotEmpty, InternalError, ServiceUnavailable, NoSuchKey, \
-    CORSForbidden, CORSInvalidAccessControlRequest, CORSOriginMissing
+    CORSForbidden, CORSInvalidAccessControlRequest, CORSOriginMissing, \
+    BucketAlreadyExists
 from swift3.cfg import CONF
 from swift3.utils import LOGGER, MULTIUPLOAD_SUFFIX, VERSIONING_SUFFIX, \
     extract_s3_etag, log_s3api_command
@@ -335,6 +336,14 @@ class BucketController(Controller):
                 raise InvalidLocationConstraint()
 
         resp = req.get_response(self.app)
+
+        # create bucket+segments to avoid breaking
+        # functional tests for swift3
+        try:
+            cnt = req.container_name + MULTIUPLOAD_SUFFIX
+            req.get_response(self.app, 'PUT', cnt, '')
+        except BucketAlreadyExists:
+            pass
 
         resp.status = HTTP_OK
         resp.location = '/' + req.container_name
