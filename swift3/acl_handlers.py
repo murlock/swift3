@@ -178,6 +178,9 @@ class BucketAclHandler(BaseAclHandler):
             return self._handle_acl(app, 'GET')
 
     def PUT(self, app):
+        if self.container.endswith(MULTIUPLOAD_SUFFIX):
+            # create multiupload container doesn't need acls
+            return
         req_acl = ACL.from_headers(self.req.headers,
                                    Owner(self.user_id, self.user_id))
 
