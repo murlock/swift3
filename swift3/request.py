@@ -222,7 +222,8 @@ class SigV4Mixin(object):
             # TODO: make sure if is it malformed request?
             raise AuthorizationHeaderMalformed()
 
-        self._signed_headers = set(signed_headers.split(';'))
+        # TODO: use a OrderedSet or backup position of expect
+        self._signed_headers = signed_headers.split(';')
 
         # credential must be in following format:
         # <access-key-id>/<date>/<AWS-region>/<AWS-service>/aws4_request
@@ -255,7 +256,8 @@ class SigV4Mixin(object):
             # TODO: make sure if is it Malformed?
             raise AuthorizationHeaderMalformed()
 
-        self._signed_headers = set(signed_headers.split(';'))
+        # TODO: use a OrderedSet or backup position of expect
+        self._signed_headers = signed_headers.split(';')
 
         return access, sig
 
@@ -298,6 +300,17 @@ class SigV4Mixin(object):
         headers_to_sign = [
             (key, value) for key, value in sorted(headers_lower_dict.items())
             if key in self._signed_headers]
+
+        # workaround when nginx is used as proxy:
+        # it drops the Expect header but ruby sdk used it for the signature
+        # when nginx is configured to pass Except header, it is not managed
+        # and send data without waiting the 100-continue
+        # this fix is not perfect as
+        if 'expect' in self._signed_headers:
+            if 'except' not in [item[0] for  item in headers_to_sign]:
+                idx = self._signed_headers.index('expect')
+                # this fix will may not work
+                headers_to_sign.insert(idx, ('expect', '100-continue'))
 
         if len(headers_to_sign) != len(self._signed_headers):
             # NOTE: if we are missing the header suggested via
