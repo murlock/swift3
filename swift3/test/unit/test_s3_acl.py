@@ -537,5 +537,15 @@ class TestSwift3S3Acl(Swift3TestCase):
         self.assertRaises(TypeError, fake_class.s3acl_s3only_error)
         self.assertIsNone(fake_class.s3acl_s3only_no_error())
 
+    def test_object_empty_acl(self):
+        req = Request.blank('/bucket/object',
+                            environ={'REQUEST_METHOD': 'PUT'},
+                            headers={'Authorization': 'AWS test:tester:hmac',
+                                     'Date': self.get_date_header(),
+                                     'x-amz-acl': ''})
+        status, headers, body = self.call_swift3(req)
+        self.assertEqual(status.split()[0], '200')
+
+
 if __name__ == '__main__':
     unittest.main()
